@@ -94,7 +94,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "ListFolderProcessor",
       {
-        functionName: "ListFolderProcessor",
+        functionName: "MediaApiListFolderProcessor",
         entry: path.join(currentDirPath, "../src/list-folder/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
@@ -126,7 +126,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "GetMetadataProcessor",
       {
-        functionName: "GetMetadataProcessor",
+        functionName: "MediaApiGetMetadataProcessor",
         entry: path.join(currentDirPath, "../src/get-metadata/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
@@ -152,7 +152,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "UpdateMetadataProcessor",
       {
-        functionName: "UpdateMetadataProcessor",
+        functionName: "MediaApiUpdateMetadataProcessor",
         entry: path.join(currentDirPath, "../src/update-metadata/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
@@ -184,7 +184,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "GetTagsProcessor",
       {
-        functionName: "GetTagsProcessor",
+        functionName: "MediaApiGetTagsProcessor",
         entry: path.join(currentDirPath, "../src/get-tags/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
@@ -210,7 +210,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "SearchProcessor",
       {
-        functionName: "SearchProcessor",
+        functionName: "MediaApiSearchProcessor",
         entry: path.join(currentDirPath, "../src/search/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
