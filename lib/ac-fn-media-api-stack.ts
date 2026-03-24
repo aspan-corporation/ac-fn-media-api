@@ -41,10 +41,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "/ac/data/tags-table-name",
     );
-    const mediaBucketName = ssm.StringParameter.valueForStringParameter(
-      this,
-      "/ac/storage/media-bucket-name",
-    );
+    // Bucket name is a well-known constant — no SSM needed
+    const mediaBucketName = "nurtai-media";
 
     // Concrete values for IAM policy resource ARNs.
     // IAM does not support CloudFormation SSM dynamic references, so we cannot
@@ -54,7 +52,6 @@ export class AcFnMediaApiStack extends cdk.Stack {
     const metaTableNameResolved = `${dataStackName}-metadata`;
     const searchTableNameResolved = `${dataStackName}-search`;
     const tagsTableNameResolved = `${dataStackName}-tags`;
-    const mediaBucketNameResolved = "nurtai-media";
 
     // Read Cognito User Pool ID for future use
     const _userPoolId = ssm.StringParameter.valueForStringParameter(
@@ -123,13 +120,13 @@ export class AcFnMediaApiStack extends cdk.Stack {
     listFolderFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["s3:ListBucket"],
-        resources: [`arn:aws:s3:::${mediaBucketNameResolved}`],
+        resources: [`arn:aws:s3:::${mediaBucketName}`],
       }),
     );
     listFolderFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["s3:GetObject"],
-        resources: [`arn:aws:s3:::${mediaBucketNameResolved}/*`],
+        resources: [`arn:aws:s3:::${mediaBucketName}/*`],
       }),
     );
 
