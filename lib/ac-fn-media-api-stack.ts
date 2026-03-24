@@ -26,7 +26,9 @@ export class AcFnMediaApiStack extends cdk.Stack {
       centralLogGroupArn,
     );
 
-    // Get table/bucket names from SSM
+    // valueForStringParameter → CloudFormation {{resolve:ssm:...}} token, fine for env vars
+    // valueFromLookup       → concrete string resolved at synth time, required for IAM policy resources
+    //                         (IAM does not support CloudFormation SSM dynamic references)
     const metaTableName = ssm.StringParameter.valueForStringParameter(
       this,
       "/ac/data/meta-table-name",
@@ -44,20 +46,38 @@ export class AcFnMediaApiStack extends cdk.Stack {
       "/ac/storage/media-bucket-name",
     );
 
+    // Synth-time lookups for IAM policy resource ARNs
+    const metaTableNameResolved = ssm.StringParameter.valueFromLookup(
+      this,
+      "/ac/data/meta-table-name",
+    );
+    const searchTableNameResolved = ssm.StringParameter.valueFromLookup(
+      this,
+      "/ac/data/search-table-name",
+    );
+    const tagsTableNameResolved = ssm.StringParameter.valueFromLookup(
+      this,
+      "/ac/data/tags-table-name",
+    );
+    const mediaBucketNameResolved = ssm.StringParameter.valueFromLookup(
+      this,
+      "/ac/storage/media-bucket-name",
+    );
+
     // Read Cognito User Pool ID for future use
     const _userPoolId = ssm.StringParameter.valueForStringParameter(
       this,
       "/ac/auth/user-pool-id",
     );
 
-    // Build ARNs
+    // Build ARNs using synth-time resolved names (IAM does not support SSM dynamic refs)
     const metaTableArn = cdk.Arn.format(
       {
         partition: "aws",
         service: "dynamodb",
         region: this.region,
         account: this.account,
-        resource: `table/${metaTableName}`,
+        resource: `table/${metaTableNameResolved}`,
       },
       this,
     );
@@ -68,7 +88,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         service: "dynamodb",
         region: this.region,
         account: this.account,
-        resource: `table/${searchTableName}`,
+        resource: `table/${searchTableNameResolved}`,
       },
       this,
     );
@@ -79,7 +99,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         service: "dynamodb",
         region: this.region,
         account: this.account,
-        resource: `table/${tagsTableName}`,
+        resource: `table/${tagsTableNameResolved}`,
       },
       this,
     );
@@ -111,13 +131,13 @@ export class AcFnMediaApiStack extends cdk.Stack {
     listFolderFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["s3:ListBucket"],
-        resources: [`arn:aws:s3:::${mediaBucketName}`],
+        resources: [`arn:aws:s3:::${mediaBucketNameResolved}`],
       }),
     );
     listFolderFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["s3:GetObject"],
-        resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+        resources: [`arn:aws:s3:::${mediaBucketNameResolved}/*`],
       }),
     );
 
