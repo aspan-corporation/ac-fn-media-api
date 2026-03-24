@@ -46,23 +46,15 @@ export class AcFnMediaApiStack extends cdk.Stack {
       "/ac/storage/media-bucket-name",
     );
 
-    // Synth-time lookups for IAM policy resource ARNs
-    const metaTableNameResolved = ssm.StringParameter.valueFromLookup(
-      this,
-      "/ac/data/meta-table-name",
-    );
-    const searchTableNameResolved = ssm.StringParameter.valueFromLookup(
-      this,
-      "/ac/data/search-table-name",
-    );
-    const tagsTableNameResolved = ssm.StringParameter.valueFromLookup(
-      this,
-      "/ac/data/tags-table-name",
-    );
-    const mediaBucketNameResolved = ssm.StringParameter.valueFromLookup(
-      this,
-      "/ac/storage/media-bucket-name",
-    );
+    // Concrete values for IAM policy resource ARNs.
+    // IAM does not support CloudFormation SSM dynamic references, so we cannot
+    // use valueForStringParameter here. The table names follow a known naming
+    // convention (stackName-suffix) and the bucket name is a fixed constant.
+    const dataStackName = "AcDataStack";
+    const metaTableNameResolved = `${dataStackName}-metadata`;
+    const searchTableNameResolved = `${dataStackName}-search`;
+    const tagsTableNameResolved = `${dataStackName}-tags`;
+    const mediaBucketNameResolved = "nurtai-media";
 
     // Read Cognito User Pool ID for future use
     const _userPoolId = ssm.StringParameter.valueForStringParameter(
