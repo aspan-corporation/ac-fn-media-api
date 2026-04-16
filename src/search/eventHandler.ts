@@ -33,11 +33,18 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
   const { dynamoDBService } = acServices;
   assert(dynamoDBService, "dynamoDBService is required in context.acServices");
 
-  const { searchInput, pageSize, nextToken } = JSON.parse(event.body ?? "{}") as {
-    searchInput: SearchInput;
-    pageSize: number;
-    nextToken?: string;
-  };
+  let parsedBody: { searchInput: SearchInput; pageSize: number; nextToken?: string };
+  try {
+    parsedBody = JSON.parse(event.body ?? "{}");
+  } catch {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "Invalid JSON body" }),
+    };
+  }
+
+  const { searchInput, pageSize, nextToken } = parsedBody;
 
   let foundEntries: SearchResult = [];
 
@@ -95,6 +102,8 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     };
   }
 
+  // TODO: replace with a single batchGetCommand call once DynamoDBService exposes it
+  //       (currently only batchWriteCommand is available), to eliminate the N+1 GetItem pattern.
   const getCommandOutputs: GetCommandOutput[] = await Promise.all(
     foundEntries.map(({ id }) =>
       dynamoDBService.getCommand({

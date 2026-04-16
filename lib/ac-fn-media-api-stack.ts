@@ -53,12 +53,6 @@ export class AcFnMediaApiStack extends cdk.Stack {
     const searchTableNameResolved = `${dataStackName}-search`;
     const tagsTableNameResolved = `${dataStackName}-tags`;
 
-    // Read Cognito User Pool ID for future use
-    const _userPoolId = ssm.StringParameter.valueForStringParameter(
-      this,
-      "/ac/auth/user-pool-id",
-    );
-
     // Build ARNs using synth-time resolved names (IAM does not support SSM dynamic refs)
     const metaTableArn = cdk.Arn.format(
       {

@@ -11,7 +11,27 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     assert(dynamoDBService, "dynamoDBService is required in context.acServices");
 
     const id = decodeURIComponent(event.pathParameters?.id ?? "");
-    const { tags } = JSON.parse(event.body ?? "{}");
+
+    let parsedBody: Record<string, unknown>;
+    try {
+      parsedBody = JSON.parse(event.body ?? "{}");
+    } catch {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "Invalid JSON body" }),
+      };
+    }
+
+    const { tags } = parsedBody;
+
+    if (!Array.isArray(tags)) {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "tags must be an array" }),
+      };
+    }
 
     logger.debug("updateMetadata", { id, tags });
 

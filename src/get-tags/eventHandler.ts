@@ -11,14 +11,27 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     assert(dynamoDBService, "dynamoDBService is required in context.acServices");
 
     const pageSize = parseInt(event.queryStringParameters?.pageSize ?? "20", 10);
+    const safePage = Math.max(1, Math.min(isNaN(pageSize) ? 20 : pageSize, 1000));
     const nextTokenRaw = event.queryStringParameters?.nextToken;
-    const exclusiveStartKey = nextTokenRaw ? JSON.parse(nextTokenRaw) : undefined;
 
-    logger.debug("getTags", { pageSize, exclusiveStartKey });
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+    if (nextTokenRaw) {
+      try {
+        exclusiveStartKey = JSON.parse(nextTokenRaw);
+      } catch {
+        return {
+          statusCode: 400,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "Invalid nextToken" }),
+        };
+      }
+    }
+
+    logger.debug("getTags", { pageSize: safePage, exclusiveStartKey });
 
     const result = await dynamoDBService.scanCommand({
       TableName: tagsTableName,
-      Limit: pageSize,
+      Limit: safePage,
       ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
     });
 

@@ -23,15 +23,16 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
 
     const id = event.pathParameters?.id ?? "";
     const pageSize = parseInt(event.queryStringParameters?.pageSize ?? "20", 10);
+    const safePage = Math.max(1, Math.min(isNaN(pageSize) ? 20 : pageSize, 1000));
     const nextToken = event.queryStringParameters?.nextToken;
 
-    logger.debug("listFolder", { id, pageSize, nextToken });
+    logger.debug("listFolder", { id, pageSize: safePage, nextToken });
 
-    // S3 caps MaxKeys at 1000 per call — paginate internally to satisfy pageSize
+    // S3 caps MaxKeys at 1000 per call — paginate internally to satisfy safePage
     const folderEntries: Array<{ id: string }> = [];
     const fileEntries: Array<{ id: string }> = [];
     let continuationToken: string | undefined = nextToken;
-    let remaining = pageSize;
+    let remaining = safePage;
 
     do {
       const batchSize = Math.min(remaining, S3_MAX_KEYS);
