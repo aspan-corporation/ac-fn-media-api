@@ -10,7 +10,7 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     const { dynamoDBService } = acServices;
     assert(dynamoDBService, "dynamoDBService is required in context.acServices");
 
-    const id = event.pathParameters?.id ?? "";
+    const id = decodeURIComponent(event.pathParameters?.id ?? "");
     logger.debug("getMetadata", { id });
 
     const { Item: item } = await dynamoDBService.getCommand({

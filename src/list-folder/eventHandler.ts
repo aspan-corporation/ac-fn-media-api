@@ -1,8 +1,19 @@
-import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
+import {
+  AcContext,
+  assertEnvVar,
+  ALLOWED_EXTENSIONS,
+  ALLOWED_VIDEO_EXTENSIONS
+} from "@aspan-corporation/ac-shared";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
 
 const mediaBucketName = assertEnvVar("AC_MEDIA_BUCKET_NAME");
+const S3_MAX_KEYS = 1000; // S3 hard limit per request
+const allExtensions = [...ALLOWED_EXTENSIONS, ...ALLOWED_VIDEO_EXTENSIONS];
+const MEDIA_EXTENSIONS = new RegExp(
+  `\\.(${allExtensions.join("|")})$`,
+  "i"
+);
 
 export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult> =
   async (event, ctx) => {
@@ -16,23 +27,37 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
 
     logger.debug("listFolder", { id, pageSize, nextToken });
 
-    const result = await s3Service.listObjectsV2({
-      Bucket: mediaBucketName,
-      Prefix: decodeURIComponent(id),
-      Delimiter: "/",
-      MaxKeys: pageSize,
-      ContinuationToken: nextToken
-    });
+    // S3 caps MaxKeys at 1000 per call — paginate internally to satisfy pageSize
+    const folderEntries: Array<{ id: string }> = [];
+    const fileEntries: Array<{ id: string }> = [];
+    let continuationToken: string | undefined = nextToken;
+    let remaining = pageSize;
 
-    // Folder prefixes (sub-folders)
-    const folderEntries = (result.CommonPrefixes ?? []).map(({ Prefix }) => ({
-      id: Prefix ?? ""
-    }));
+    do {
+      const batchSize = Math.min(remaining, S3_MAX_KEYS);
+      const result = await s3Service.listObjectsV2({
+        Bucket: mediaBucketName,
+        Prefix: decodeURIComponent(id),
+        Delimiter: "/",
+        MaxKeys: batchSize,
+        ContinuationToken: continuationToken
+      });
 
-    // File entries — only .jpg / .jpeg
-    const fileEntries = (result.Contents ?? [])
-      .filter(({ Key }) => /\.(jpg|jpeg)$/i.test(Key ?? ""))
-      .map(({ Key }) => ({ id: Key ?? "" }));
+      // Folder prefixes (sub-folders)
+      for (const { Prefix } of result.CommonPrefixes ?? []) {
+        folderEntries.push({ id: Prefix ?? "" });
+      }
+
+      // File entries — images (jpg, jpeg, heic) and videos (mov)
+      for (const { Key } of result.Contents ?? []) {
+        if (MEDIA_EXTENSIONS.test(Key ?? "")) {
+          fileEntries.push({ id: Key ?? "" });
+        }
+      }
+
+      continuationToken = result.NextContinuationToken;
+      remaining -= batchSize;
+    } while (continuationToken && remaining > 0);
 
     const entries = [...folderEntries, ...fileEntries].map(({ id }) => ({ id, tags: [] }));
 
@@ -41,7 +66,7 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         entries,
-        ...(result.NextContinuationToken ? { nextToken: result.NextContinuationToken } : {})
+        ...(continuationToken ? { nextToken: continuationToken } : {})
       })
     };
   };
