@@ -7,3 +7,6 @@ export type MetaDataInput = { tags: TagInput[] };
 export type SearchInput = { filter: MetaDataInput };
 export type FolderConnection = { entries: MetaData[]; nextToken?: Maybe<string> };
 export type TagsConnection = { tags: Tag[]; nextToken?: Maybe<string> };
+export type Album = { id: string; name: string };
+export type AlbumsConnection = { albums: Album[]; nextToken?: Maybe<string> };
+export type CreateAlbumInput = { name: string };

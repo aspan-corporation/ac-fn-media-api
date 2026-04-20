@@ -41,6 +41,10 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "/ac/data/tags-table-name",
     );
+    const albumsTableName = ssm.StringParameter.valueForStringParameter(
+      this,
+      "/ac/data/albums-table-name",
+    );
     // Bucket name is a well-known constant — no SSM needed
     const mediaBucketName = "nurtai-media";
 
@@ -52,6 +56,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
     const metaTableNameResolved = `${dataStackName}-metadata`;
     const searchTableNameResolved = `${dataStackName}-search`;
     const tagsTableNameResolved = `${dataStackName}-tags`;
+    const albumsTableNameResolved = `${dataStackName}-albums`;
 
     // Build ARNs using synth-time resolved names (IAM does not support SSM dynamic refs)
     const metaTableArn = cdk.Arn.format(
@@ -83,6 +88,17 @@ export class AcFnMediaApiStack extends cdk.Stack {
         region: this.region,
         account: this.account,
         resource: `table/${tagsTableNameResolved}`,
+      },
+      this,
+    );
+
+    const albumsTableArn = cdk.Arn.format(
+      {
+        partition: "aws",
+        service: "dynamodb",
+        region: this.region,
+        account: this.account,
+        resource: `table/${albumsTableNameResolved}`,
       },
       this,
     );
@@ -264,6 +280,68 @@ export class AcFnMediaApiStack extends cdk.Stack {
     new ssm.StringParameter(this, "SearchFunctionArnParameter", {
       parameterName: "/ac/api/search-fn-arn",
       stringValue: searchFunction.functionArn,
+    });
+
+    // 6. GetAlbums Lambda
+    const getAlbumsFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "GetAlbumsProcessor",
+      {
+        functionName: "MediaApiGetAlbumsProcessor",
+        entry: path.join(currentDirPath, "../src/get-albums/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        memorySize: 128,
+        timeout: cdk.Duration.seconds(120),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_ALBUMS_TABLE_NAME: albumsTableName,
+        },
+      },
+    );
+
+    getAlbumsFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Scan", "dynamodb:DescribeTable"],
+        resources: [albumsTableArn],
+      }),
+    );
+
+    // 7. CreateAlbum Lambda
+    const createAlbumFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "CreateAlbumProcessor",
+      {
+        functionName: "MediaApiCreateAlbumProcessor",
+        entry: path.join(currentDirPath, "../src/create-album/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        memorySize: 128,
+        timeout: cdk.Duration.seconds(120),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_ALBUMS_TABLE_NAME: albumsTableName,
+        },
+      },
+    );
+
+    createAlbumFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:PutItem", "dynamodb:DescribeTable"],
+        resources: [albumsTableArn],
+      }),
+    );
+
+    new ssm.StringParameter(this, "GetAlbumsFunctionArnParameter", {
+      parameterName: "/ac/api/get-albums-fn-arn",
+      stringValue: getAlbumsFunction.functionArn,
+    });
+
+    new ssm.StringParameter(this, "CreateAlbumFunctionArnParameter", {
+      parameterName: "/ac/api/create-album-fn-arn",
+      stringValue: createAlbumFunction.functionArn,
     });
   }
 }
