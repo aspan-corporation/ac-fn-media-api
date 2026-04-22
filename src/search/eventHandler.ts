@@ -8,6 +8,7 @@ import { Logger } from "@aws-lambda-powertools/logger";
 
 const searchTableName = assertEnvVar("AC_TAU_MEDIA_SEARCH_TABLE_NAME");
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
+const TAG_HIDDEN = "ac:ediacara:hidden";
 
 type IdRecord = { id: string };
 type SearchResult = IdRecord[];
@@ -56,35 +57,45 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
 
   for (const { key, value } of tags) {
     logger.debug("trying to read existing metadata");
-    const { Items: newSearchResults } = await dynamoDBService.queryCommand({
-      TableName: searchTableName,
-      KeyConditionExpression: "#key = :key",
-      ...(value
-        ? {
-            FilterExpression: "#value = :value",
-          }
-        : {}),
-      ExpressionAttributeValues: {
-        ":key": key,
+
+    // DynamoDB Query returns at most 1MB per page, so walk LastEvaluatedKey
+    // until the full match set for this tag is collected.
+    const newSearchResults: Record<string, unknown>[] = [];
+    let exclusiveStartKey: Record<string, unknown> | undefined = undefined;
+    do {
+      const { Items, LastEvaluatedKey } = await dynamoDBService.queryCommand({
+        TableName: searchTableName,
+        KeyConditionExpression: "#key = :key",
         ...(value
           ? {
-              ":value": value,
+              FilterExpression: "#value = :value",
             }
           : {}),
-      },
-      ExpressionAttributeNames: {
-        "#key": "key",
-        ...(value
-          ? {
-              "#value": "value",
-            }
-          : {}),
-      },
-    });
+        ExpressionAttributeValues: {
+          ":key": key,
+          ...(value
+            ? {
+                ":value": value,
+              }
+            : {}),
+        },
+        ExpressionAttributeNames: {
+          "#key": "key",
+          ...(value
+            ? {
+                "#value": "value",
+              }
+            : {}),
+        },
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      });
+      if (Items?.length) newSearchResults.push(...Items);
+      exclusiveStartKey = LastEvaluatedKey;
+    } while (exclusiveStartKey);
 
     foundEntries = mergeSearchResults(
       foundEntries,
-      newSearchResults?.map((item: Record<string, unknown>) => ({ id: item.id as string })),
+      newSearchResults.map((item) => ({ id: item.id as string })),
       logger,
     );
   }
@@ -102,10 +113,22 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     };
   }
 
+  // Paginate ID list BEFORE the metadata fetch, so we only do N=pageSize GetItem
+  // calls instead of one per every match.
+  const { startingIndex, newNextToken }: FindTokenIndexResult = findTokenIndex({
+    entries: foundEntries,
+    pageSize,
+    token: nextToken,
+  });
+
+  logger.debug("FindTokenIndexResult", { startingIndex, newNextToken });
+
+  const pageIds = foundEntries.slice(startingIndex, startingIndex + pageSize);
+
   // TODO: replace with a single batchGetCommand call once DynamoDBService exposes it
   //       (currently only batchWriteCommand is available), to eliminate the N+1 GetItem pattern.
   const getCommandOutputs: GetCommandOutput[] = await Promise.all(
-    foundEntries.map(({ id }) =>
+    pageIds.map(({ id }) =>
       dynamoDBService.getCommand({
         TableName: metaTableName,
         Key: { id },
@@ -118,27 +141,12 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     "could not find meta for some id",
   );
 
-  // get attributes metadata
-  const responses: MetaData[] = getCommandOutputs.map(({ Item: item }) => ({
-    id: item!.id,
-    tags: item!.tags,
-  }));
-
-  logger.debug("mapped metadata", {
-    responses,
-  });
-
-  // calculate next token
-  const { startingIndex, newNextToken }: FindTokenIndexResult = findTokenIndex({
-    entries: responses,
-    pageSize,
-    token: nextToken,
-  });
-
-  logger.debug("FindTokenIndexResult", { startingIndex, newNextToken });
-
-  // trim to pageSize
-  const finalResult = responses.slice(startingIndex, startingIndex + pageSize);
+  const finalResult: MetaData[] = getCommandOutputs
+    .map(({ Item: item }) => ({
+      id: item!.id,
+      tags: item!.tags,
+    }))
+    .filter(({ tags }) => !tags.some((t: { key: string }) => t.key === TAG_HIDDEN));
 
   logger.debug("finalResult", { finalResult });
   logger.debug("all done");

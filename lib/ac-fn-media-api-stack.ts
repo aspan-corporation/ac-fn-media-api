@@ -123,6 +123,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         environment: {
           ...commonEnv,
           AC_MEDIA_BUCKET_NAME: mediaBucketName,
+          AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
         },
       },
     );
@@ -137,6 +138,12 @@ export class AcFnMediaApiStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ["s3:GetObject"],
         resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+      }),
+    );
+    listFolderFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:DescribeTable"],
+        resources: [metaTableArn],
       }),
     );
 

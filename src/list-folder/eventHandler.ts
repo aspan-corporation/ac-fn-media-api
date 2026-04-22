@@ -8,6 +8,8 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda
 import assert from "node:assert";
 
 const mediaBucketName = assertEnvVar("AC_MEDIA_BUCKET_NAME");
+const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
+const TAG_HIDDEN = "ac:ediacara:hidden";
 const S3_MAX_KEYS = 1000; // S3 hard limit per request
 const allExtensions = [...ALLOWED_EXTENSIONS, ...ALLOWED_VIDEO_EXTENSIONS];
 const MEDIA_EXTENSIONS = new RegExp(
@@ -18,8 +20,9 @@ const MEDIA_EXTENSIONS = new RegExp(
 export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult> =
   async (event, ctx) => {
     const { logger, acServices = {} } = ctx as unknown as AcContext;
-    const { s3Service } = acServices;
+    const { s3Service, dynamoDBService } = acServices;
     assert(s3Service, "s3Service is required");
+    assert(dynamoDBService, "dynamoDBService is required");
 
     const id = event.pathParameters?.id ?? "";
     const pageSize = parseInt(event.queryStringParameters?.pageSize ?? "20", 10);
@@ -60,7 +63,18 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       remaining -= batchSize;
     } while (continuationToken && remaining > 0);
 
-    const entries = [...folderEntries, ...fileEntries].map(({ id }) => ({ id, tags: [] }));
+    // Filter hidden files by checking meta table in parallel
+    const metaResults = await Promise.all(
+      fileEntries.map(({ id }) =>
+        dynamoDBService.getCommand({ TableName: metaTableName, Key: { id } })
+      )
+    );
+    const visibleFileEntries = fileEntries.filter((_, i) => {
+      const tags: { key: string }[] = metaResults[i].Item?.tags ?? [];
+      return !tags.some((t) => t.key === TAG_HIDDEN);
+    });
+
+    const entries = [...folderEntries, ...visibleFileEntries].map(({ id }) => ({ id, tags: [] }));
 
     return {
       statusCode: 200,
