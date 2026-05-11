@@ -45,8 +45,6 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "/ac/data/albums-table-name",
     );
-    // Bucket name is a well-known constant — no SSM needed
-    const mediaBucketName = "nurtai-media";
 
     // Concrete values for IAM policy resource ARNs.
     // IAM does not support CloudFormation SSM dynamic references, so we cannot
@@ -108,7 +106,16 @@ export class AcFnMediaApiStack extends cdk.Stack {
       POWERTOOLS_SERVICE_NAME: "ac-fn-media-api",
     };
 
-    // 1. ListFolder Lambda
+    // Memory / timeout sizing for a single-tenant family app
+    // ----------------------------------------------------------------
+    // Reads (interactive, latency-sensitive)         : 512 MB / 10 s
+    // Search (multi-Query + intersect, hot path)     : 1024 MB / 30 s
+    // Writes (rare, dwell-tolerant)                  : 256 MB / 15 s
+    //
+    // Lambda billing is ms × MB; doubling memory often halves wall time
+    // for interactive paths so net cost is flat or lower while UX wins.
+
+    // 1. ListFolder Lambda — queries the meta table's `by-folder` GSI.
     const listFolderFunction = new lambdaNodejs.NodejsFunction(
       this,
       "ListFolderProcessor",
@@ -117,12 +124,11 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/list-folder/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(120),
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(10),
         logGroup: centralLogGroup,
         environment: {
           ...commonEnv,
-          AC_MEDIA_BUCKET_NAME: mediaBucketName,
           AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
         },
       },
@@ -130,20 +136,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
 
     listFolderFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["s3:ListBucket"],
-        resources: [`arn:aws:s3:::${mediaBucketName}`],
-      }),
-    );
-    listFolderFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["s3:GetObject"],
-        resources: [`arn:aws:s3:::${mediaBucketName}/*`],
-      }),
-    );
-    listFolderFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:DescribeTable"],
-        resources: [metaTableArn],
+        actions: ["dynamodb:Query"],
+        resources: [metaTableArn, `${metaTableArn}/index/*`],
       }),
     );
 
@@ -156,8 +150,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/get-metadata/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(120),
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(10),
         logGroup: centralLogGroup,
         environment: {
           ...commonEnv,
@@ -168,7 +162,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
 
     getMetadataFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:DescribeTable"],
+        actions: ["dynamodb:GetItem"],
         resources: [metaTableArn],
       }),
     );
@@ -182,8 +176,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/update-metadata/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(120),
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(15),
         logGroup: centralLogGroup,
         environment: {
           ...commonEnv,
@@ -192,15 +186,10 @@ export class AcFnMediaApiStack extends cdk.Stack {
       },
     );
 
+    // GetItem to read existing system tags, UpdateItem to write merged tags.
     updateMetadataFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: [
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:GetItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:DescribeTable",
-        ],
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
         resources: [metaTableArn],
       }),
     );
@@ -214,8 +203,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/get-tags/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(120),
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(15),
         logGroup: centralLogGroup,
         environment: {
           ...commonEnv,
@@ -226,7 +215,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
 
     getTagsFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["dynamodb:Scan", "dynamodb:Query", "dynamodb:DescribeTable"],
+        actions: ["dynamodb:Scan"],
         resources: [tagsTableArn],
       }),
     );
@@ -240,8 +229,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/search/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(120),
+        memorySize: 1024,
+        timeout: cdk.Duration.seconds(30),
         logGroup: centralLogGroup,
         environment: {
           ...commonEnv,
@@ -251,14 +240,10 @@ export class AcFnMediaApiStack extends cdk.Stack {
       },
     );
 
+    // BatchGetItem is implicitly granted by GetItem on the same resource.
     searchFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: [
-          "dynamodb:Query",
-          "dynamodb:Scan",
-          "dynamodb:GetItem",
-          "dynamodb:DescribeTable",
-        ],
+        actions: ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:BatchGetItem"],
         resources: [metaTableArn, searchTableArn],
       }),
     );
@@ -298,8 +283,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/get-albums/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(120),
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(10),
         logGroup: centralLogGroup,
         environment: {
           ...commonEnv,
@@ -310,7 +295,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
 
     getAlbumsFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["dynamodb:Scan", "dynamodb:DescribeTable"],
+        actions: ["dynamodb:Scan"],
         resources: [albumsTableArn],
       }),
     );
@@ -324,8 +309,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/create-album/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(120),
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(15),
         logGroup: centralLogGroup,
         environment: {
           ...commonEnv,
@@ -336,7 +321,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
 
     createAlbumFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["dynamodb:PutItem", "dynamodb:DescribeTable"],
+        actions: ["dynamodb:PutItem"],
         resources: [albumsTableArn],
       }),
     );
@@ -349,6 +334,47 @@ export class AcFnMediaApiStack extends cdk.Stack {
     new ssm.StringParameter(this, "CreateAlbumFunctionArnParameter", {
       parameterName: "/ac/api/create-album-fn-arn",
       stringValue: createAlbumFunction.functionArn,
+    });
+
+    // 8. DownloadUrl Lambda — generates a presigned S3 URL for the original file
+    const downloadUrlFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "DownloadUrlProcessor",
+      {
+        functionName: "MediaApiDownloadUrlProcessor",
+        entry: path.join(currentDirPath, "../src/download-url/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(10),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_TAU_MEDIA_MEDIA_BUCKET_NAME: ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/storage/media-bucket-name",
+          ),
+          AC_TAU_MEDIA_MEDIA_BUCKET_ACCESS_ROLE_ARN: ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/iam/media-bucket-access-role-arn",
+          ),
+        },
+      },
+    );
+
+    // Allow Lambda to assume the S3 media read access role (for presigned URL generation)
+    downloadUrlFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["sts:AssumeRole"],
+        resources: [
+          `arn:aws:iam::${this.account}:role/aspan-corporation/ac-s3-media-read-access`,
+        ],
+      }),
+    );
+
+    new ssm.StringParameter(this, "DownloadUrlFunctionArnParameter", {
+      parameterName: "/ac/api/download-url-fn-arn",
+      stringValue: downloadUrlFunction.functionArn,
     });
   }
 }

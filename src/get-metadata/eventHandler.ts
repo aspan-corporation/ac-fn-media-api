@@ -10,6 +10,11 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     const { dynamoDBService } = acServices;
     assert(dynamoDBService, "dynamoDBService is required in context.acServices");
 
+    const headers = {
+      "Content-Type": "application/json",
+      "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+    };
+
     const id = decodeURIComponent(event.pathParameters?.id ?? "");
     logger.debug("getMetadata", { id });
 
@@ -21,14 +26,14 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     if (!item) {
       return {
         statusCode: 200,
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ id, tags: [] }),
       };
     }
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ id: item.id, tags: item.tags ?? [] }),
     };
   };

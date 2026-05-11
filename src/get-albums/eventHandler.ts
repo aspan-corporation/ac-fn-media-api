@@ -14,6 +14,11 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     const safePage = Math.max(1, Math.min(isNaN(pageSize) ? 100 : pageSize, 1000));
     const nextTokenRaw = event.queryStringParameters?.nextToken;
 
+    const headers = {
+      "Content-Type": "application/json",
+      "Cache-Control": "private, max-age=60, stale-while-revalidate=300",
+    };
+
     let exclusiveStartKey: Record<string, unknown> | undefined;
     if (nextTokenRaw) {
       try {
@@ -21,7 +26,7 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       } catch {
         return {
           statusCode: 400,
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({ message: "Invalid nextToken" }),
         };
       }
@@ -44,7 +49,7 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         albums,
         ...(result.LastEvaluatedKey

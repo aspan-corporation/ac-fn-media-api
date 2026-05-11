@@ -1,4 +1,3 @@
-import type { MetaData } from "../shared/types.js";
 import assert from "assert";
 
 export type FindTokenIndexResult = {
@@ -11,7 +10,7 @@ export const findTokenIndex = ({
   pageSize,
   token,
 }: {
-  entries: MetaData[];
+  entries: { id: string }[];
   pageSize: number;
   token?: string | undefined | null;
 }): FindTokenIndexResult => {

@@ -1,87 +1,110 @@
-import {
-  AcContext,
-  assertEnvVar,
-  ALLOWED_EXTENSIONS,
-  ALLOWED_VIDEO_EXTENSIONS
-} from "@aspan-corporation/ac-shared";
+import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
 
-const mediaBucketName = assertEnvVar("AC_MEDIA_BUCKET_NAME");
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
+const META_FOLDER_INDEX = "by-folder";
+const ROOT_FOLDER = "/";
+
 const TAG_HIDDEN = "ac:ediacara:hidden";
-const S3_MAX_KEYS = 1000; // S3 hard limit per request
-const allExtensions = [...ALLOWED_EXTENSIONS, ...ALLOWED_VIDEO_EXTENSIONS];
-const MEDIA_EXTENSIONS = new RegExp(
-  `\\.(${allExtensions.join("|")})$`,
-  "i"
-);
+
+const headers = {
+  "Content-Type": "application/json",
+  "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+};
+
+const normalizeFolder = (id: string): string => {
+  if (!id) return ROOT_FOLDER;
+  return id.endsWith("/") ? id : `${id}/`;
+};
+
+const isHidden = (tags: Array<{ key: string; value: string }>) =>
+  tags.some((t) => t.key === TAG_HIDDEN);
 
 export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult> =
   async (event, ctx) => {
     const { logger, acServices = {} } = ctx as unknown as AcContext;
-    const { s3Service, dynamoDBService } = acServices;
-    assert(s3Service, "s3Service is required");
+    const { dynamoDBService } = acServices;
     assert(dynamoDBService, "dynamoDBService is required");
 
-    const id = event.pathParameters?.id ?? "";
-    const pageSize = parseInt(event.queryStringParameters?.pageSize ?? "20", 10);
-    const safePage = Math.max(1, Math.min(isNaN(pageSize) ? 20 : pageSize, 1000));
+    const rawId = decodeURIComponent(event.pathParameters?.id ?? "");
+    const folder = normalizeFolder(rawId);
+    const requestedPageSize = parseInt(
+      event.queryStringParameters?.pageSize ?? "20",
+      10
+    );
+    const pageSize = Math.max(
+      1,
+      Math.min(isNaN(requestedPageSize) ? 20 : requestedPageSize, 1000)
+    );
     const nextToken = event.queryStringParameters?.nextToken;
+    const startKey = nextToken
+      ? (JSON.parse(Buffer.from(nextToken, "base64").toString("utf8")) as Record<
+          string,
+          unknown
+        >)
+      : undefined;
 
-    logger.debug("listFolder", { id, pageSize: safePage, nextToken });
+    logger.debug("listFolder", { rawId, folder, pageSize, nextToken });
 
-    // S3 caps MaxKeys at 1000 per call — paginate internally to satisfy safePage
-    const folderEntries: Array<{ id: string }> = [];
-    const fileEntries: Array<{ id: string }> = [];
-    let continuationToken: string | undefined = nextToken;
-    let remaining = safePage;
+    // Hidden items are filtered in the lambda, but pagination is corrected
+    // by looping until we accumulate `pageSize` visible items (or exhaust
+    // the partition). Previously the handler returned at most one Query
+    // page minus hidden items, producing inconsistent page sizes for the
+    // client. DynamoDB doesn't support FilterExpression on nested map
+    // attributes (the `tags` list of `{key, value}` maps), so an in-lambda
+    // loop is the cleanest correct fix without a schema change.
+    //
+    // For folders with low hidden ratios this is one Query (Limit=pageSize
+    // mostly returns enough visible items). For high-hidden folders RCU
+    // grows linearly with hidden count — acceptable for a family library.
+    const MAX_ITERATIONS = 10;
+    const visible: Array<{ id: string; tags: Array<{ key: string; value: string }> }> = [];
+    let lastEvaluatedKey: Record<string, unknown> | undefined = startKey;
+    let iterations = 0;
 
     do {
-      const batchSize = Math.min(remaining, S3_MAX_KEYS);
-      const result = await s3Service.listObjectsV2({
-        Bucket: mediaBucketName,
-        Prefix: decodeURIComponent(id),
-        Delimiter: "/",
-        MaxKeys: batchSize,
-        ContinuationToken: continuationToken
+      const remaining = pageSize - visible.length;
+      const result = await dynamoDBService.queryCommand({
+        TableName: metaTableName,
+        IndexName: META_FOLDER_INDEX,
+        KeyConditionExpression: "#folder = :folder",
+        ExpressionAttributeNames: { "#folder": "folder" },
+        ExpressionAttributeValues: { ":folder": folder },
+        ProjectionExpression: "id, tags",
+        Limit: remaining,
+        ...(lastEvaluatedKey ? { ExclusiveStartKey: lastEvaluatedKey } : {}),
       });
 
-      // Folder prefixes (sub-folders)
-      for (const { Prefix } of result.CommonPrefixes ?? []) {
-        folderEntries.push({ id: Prefix ?? "" });
-      }
-
-      // File entries — images (jpg, jpeg, heic) and videos (mov)
-      for (const { Key } of result.Contents ?? []) {
-        if (MEDIA_EXTENSIONS.test(Key ?? "")) {
-          fileEntries.push({ id: Key ?? "" });
+      for (const raw of (result.Items ?? []) as Array<{
+        id: string;
+        tags?: Array<{ key: string; value: string }>;
+      }>) {
+        const tags = raw.tags ?? [];
+        if (!isHidden(tags)) {
+          visible.push({ id: raw.id, tags });
+          if (visible.length >= pageSize) break;
         }
       }
 
-      continuationToken = result.NextContinuationToken;
-      remaining -= batchSize;
-    } while (continuationToken && remaining > 0);
-
-    // Filter hidden files by checking meta table in parallel
-    const metaResults = await Promise.all(
-      fileEntries.map(({ id }) =>
-        dynamoDBService.getCommand({ TableName: metaTableName, Key: { id } })
-      )
+      lastEvaluatedKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      iterations++;
+    } while (
+      lastEvaluatedKey &&
+      visible.length < pageSize &&
+      iterations < MAX_ITERATIONS
     );
-    const visibleFileEntries = fileEntries.filter((_, i) => {
-      const tags: { key: string }[] = metaResults[i].Item?.tags ?? [];
-      return !tags.some((t) => t.key === TAG_HIDDEN);
-    });
 
-    const entries = [...folderEntries, ...visibleFileEntries].map(({ id }) => ({ id, tags: [] }));
+    const responseNextToken = lastEvaluatedKey
+      ? Buffer.from(JSON.stringify(lastEvaluatedKey)).toString("base64")
+      : undefined;
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
-        entries,
-        ...(continuationToken ? { nextToken: continuationToken } : {})
-      })
+        entries: visible,
+        ...(responseNextToken ? { nextToken: responseNextToken } : {}),
+      }),
     };
   };
