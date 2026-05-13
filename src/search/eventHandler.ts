@@ -145,6 +145,22 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     const safePageSize = Math.max(1, Math.min(pageSize ?? 20, 1000));
     const tags = searchInput.filter.tags;
 
+    // ── Admin detection ─────────────────────────────────────────────────
+    // Cognito User Pools authorizer puts JWT claims here. The cognito:groups
+    // claim arrives as a stringified list (e.g. "[admin]" or "admin,user")
+    // — checking for the substring is the standard robust way.
+    const groupsRaw =
+      (event.requestContext as { authorizer?: { claims?: Record<string, string> } } | undefined)
+        ?.authorizer?.claims?.["cognito:groups"];
+    const isAdmin = typeof groupsRaw === "string" && /\badmin\b/.test(groupsRaw);
+
+    // If the caller explicitly searches for the hidden tag, they're asking
+    // for hidden items. Only admins may receive them; for everyone else we
+    // continue to strip hidden items out below (so a non-admin probing this
+    // gets nothing back, never the actual hidden set).
+    const searchingForHidden = tags.some((t) => t.key === TAG_HIDDEN);
+    const includeHidden = isAdmin && searchingForHidden;
+
     // ── 1. Query each tag → get candidate IDs as Sets ─────────────────
     // Run all per-tag Queries in parallel. Each returns the full set
     // because subsequent intersection requires complete sets, not pages.
@@ -173,10 +189,18 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     }
 
     // ── 3. Filter out hidden via a single search-table Query ──────────
-    const hiddenIds = await queryIdsForTag(dynamoDBService, TAG_HIDDEN);
-    const visible: string[] = [];
-    for (const id of merged) {
-      if (!hiddenIds.has(id)) visible.push(id);
+    // Skipped when an admin explicitly searches for hidden items — that
+    // page in the UI literally lists hidden content, so stripping them
+    // here would always return an empty set.
+    let visible: string[];
+    if (includeHidden) {
+      visible = [...merged];
+    } else {
+      const hiddenIds = await queryIdsForTag(dynamoDBService, TAG_HIDDEN);
+      visible = [];
+      for (const id of merged) {
+        if (!hiddenIds.has(id)) visible.push(id);
+      }
     }
     if (visible.length === 0) {
       return json(200, { entries: [] } as FolderConnection);
