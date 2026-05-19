@@ -336,6 +336,61 @@ export class AcFnMediaApiStack extends cdk.Stack {
       stringValue: createAlbumFunction.functionArn,
     });
 
+    // 7b. DeleteAlbum Lambda — removes the album row AND cascades the
+    // membership-tag removal across every meta entry that was in the album.
+    // Timeout is generous (30 s) because the cascade does N read-modify-write
+    // round-trips on the meta table for an N-member album; CASCADE_CONCURRENCY
+    // in the handler caps DynamoDB pressure but doesn't bound wall-clock for
+    // very large albums. Memory is bumped for the same reason.
+    const deleteAlbumFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "DeleteAlbumProcessor",
+      {
+        functionName: "MediaApiDeleteAlbumProcessor",
+        entry: path.join(currentDirPath, "../src/delete-album/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(30),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_ALBUMS_TABLE_NAME: albumsTableName,
+          AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
+          AC_TAU_MEDIA_SEARCH_TABLE_NAME: searchTableName,
+        },
+      },
+    );
+
+    // Read+delete on albums; read+write on meta (for the tag-cascade); read
+    // on search (to enumerate members without scanning meta). The
+    // ac-fn-calculate-relationship-updates stream-handler is responsible for
+    // cleaning search-table rows after meta updates, so we don't write the
+    // search table here.
+    deleteAlbumFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:DeleteItem"],
+        resources: [albumsTableArn],
+      }),
+    );
+    deleteAlbumFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [metaTableArn],
+      }),
+    );
+    deleteAlbumFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [searchTableArn, `${searchTableArn}/index/*`],
+      }),
+    );
+
+    new ssm.StringParameter(this, "DeleteAlbumFunctionArnParameter", {
+      parameterName: "/ac/api/delete-album-fn-arn",
+      stringValue: deleteAlbumFunction.functionArn,
+    });
+
     // 8. DownloadUrl Lambda — generates a presigned S3 URL for the original file
     const downloadUrlFunction = new lambdaNodejs.NodejsFunction(
       this,
