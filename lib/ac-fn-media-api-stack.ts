@@ -391,7 +391,42 @@ export class AcFnMediaApiStack extends cdk.Stack {
       stringValue: deleteAlbumFunction.functionArn,
     });
 
-    // 8. DownloadUrl Lambda — generates a presigned S3 URL for the original file
+    // 8. HideFolder Lambda — recursively hides/unhides all items under a folder
+    // prefix. Needs Scan (to enumerate all items with begins_with) plus
+    // GetItem + UpdateItem for the read-modify-write tag merge. Timeout is
+    // generous (29 s = API GW max) because large folders can touch thousands
+    // of items; memory is 512 MB to keep the scan fast.
+    const hideFolderFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "HideFolderProcessor",
+      {
+        functionName: "MediaApiHideFolderProcessor",
+        entry: path.join(currentDirPath, "../src/hide-folder/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(29),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
+        },
+      },
+    );
+
+    hideFolderFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Scan", "dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [metaTableArn],
+      }),
+    );
+
+    new ssm.StringParameter(this, "HideFolderFunctionArnParameter", {
+      parameterName: "/ac/api/hide-folder-fn-arn",
+      stringValue: hideFolderFunction.functionArn,
+    });
+
+    // 9. DownloadUrl Lambda — generates a presigned S3 URL for the original file
     const downloadUrlFunction = new lambdaNodejs.NodejsFunction(
       this,
       "DownloadUrlProcessor",
