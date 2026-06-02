@@ -391,7 +391,41 @@ export class AcFnMediaApiStack extends cdk.Stack {
       stringValue: deleteAlbumFunction.functionArn,
     });
 
-    // 8. HideFolder Lambda — recursively hides/unhides all items under a folder
+    // 8. BulkTag Lambda — sets/overwrites specified tags (including ac:tau:*)
+    // on a list of items in one call. Intended for manually correcting old
+    // files missing EXIF. GetItem + UpdateItem per item, throttled by
+    // CASCADE_CONCURRENCY. 512 MB / 29 s for up to 500 items.
+    const bulkTagFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "BulkTagProcessor",
+      {
+        functionName: "MediaApiBulkTagProcessor",
+        entry: path.join(currentDirPath, "../src/bulk-tag/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(29),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
+        },
+      },
+    );
+
+    bulkTagFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [metaTableArn],
+      }),
+    );
+
+    new ssm.StringParameter(this, "BulkTagFunctionArnParameter", {
+      parameterName: "/ac/api/bulk-tag-fn-arn",
+      stringValue: bulkTagFunction.functionArn,
+    });
+
+    // 10. HideFolder Lambda — recursively hides/unhides all items under a folder
     // prefix. Needs Scan (to enumerate all items with begins_with) plus
     // GetItem + UpdateItem for the read-modify-write tag merge. Timeout is
     // generous (29 s = API GW max) because large folders can touch thousands
@@ -426,7 +460,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
       stringValue: hideFolderFunction.functionArn,
     });
 
-    // 9. DownloadUrl Lambda — generates a presigned S3 URL for the original file
+    // 11. DownloadUrl Lambda — generates a presigned S3 URL for the original file
     const downloadUrlFunction = new lambdaNodejs.NodejsFunction(
       this,
       "DownloadUrlProcessor",
