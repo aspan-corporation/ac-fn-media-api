@@ -59,7 +59,13 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     // mostly returns enough visible items). For high-hidden folders RCU
     // grows linearly with hidden count — acceptable for a family library.
     const MAX_ITERATIONS = 10;
-    const visible: Array<{ id: string; tags: Array<{ key: string; value: string }> }> = [];
+    const visible: Array<{
+      id: string;
+      tags: Array<{ key: string; value: string }>;
+      blurhash?: string;
+      width?: number;
+      height?: number;
+    }> = [];
     let lastEvaluatedKey: Record<string, unknown> | undefined = startKey;
     let iterations = 0;
 
@@ -69,9 +75,10 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
         TableName: metaTableName,
         IndexName: META_FOLDER_INDEX,
         KeyConditionExpression: "#folder = :folder",
-        ExpressionAttributeNames: { "#folder": "folder" },
+        // #width / #height are aliased defensively (DynamoDB reserved-word safe).
+        ExpressionAttributeNames: { "#folder": "folder", "#width": "width", "#height": "height" },
         ExpressionAttributeValues: { ":folder": folder },
-        ProjectionExpression: "id, tags",
+        ProjectionExpression: "id, tags, blurhash, #width, #height",
         Limit: remaining,
         ...(lastEvaluatedKey ? { ExclusiveStartKey: lastEvaluatedKey } : {}),
       });
@@ -79,10 +86,20 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       for (const raw of (result.Items ?? []) as Array<{
         id: string;
         tags?: Array<{ key: string; value: string }>;
+        blurhash?: string;
+        width?: number;
+        height?: number;
       }>) {
         const tags = raw.tags ?? [];
         if (!isHidden(tags)) {
-          visible.push({ id: raw.id, tags });
+          visible.push({
+            id: raw.id,
+            tags,
+            ...(raw.blurhash ? { blurhash: raw.blurhash } : {}),
+            ...(raw.width && raw.height
+              ? { width: raw.width, height: raw.height }
+              : {}),
+          });
           if (visible.length >= pageSize) break;
         }
       }

@@ -4,7 +4,7 @@ import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 // Removed once ac-shared >= 1.2.27 is in the dependency manifest.
 type BatchGetCapableDynamoDB = NonNullable<AcContext["acServices"]>["dynamoDBService"] & {
   batchGetCommand(input: {
-    RequestItems: Record<string, { Keys: Array<Record<string, unknown>>; ProjectionExpression?: string }>;
+    RequestItems: Record<string, { Keys: Array<Record<string, unknown>>; ProjectionExpression?: string; ExpressionAttributeNames?: Record<string, string> }>;
   }): Promise<{
     Responses?: Record<string, Array<Record<string, unknown>>>;
     UnprocessedKeys?: Record<string, { Keys: Array<Record<string, unknown>> }>;
@@ -99,7 +99,9 @@ const batchGetMeta = async (
         RequestItems: {
           [metaTableName]: {
             Keys: unprocessed.map((id) => ({ id })),
-            ProjectionExpression: "id, tags",
+            // #width / #height aliased defensively (reserved-word safe).
+            ProjectionExpression: "id, tags, blurhash, #width, #height",
+            ExpressionAttributeNames: { "#width": "width", "#height": "height" },
           },
         },
       });
@@ -107,8 +109,18 @@ const batchGetMeta = async (
       for (const item of (Responses?.[metaTableName] ?? []) as Array<{
         id: string;
         tags?: Array<{ key: string; value: string }>;
+        blurhash?: string;
+        width?: number;
+        height?: number;
       }>) {
-        unordered.push({ id: item.id, tags: item.tags ?? [] });
+        unordered.push({
+          id: item.id,
+          tags: item.tags ?? [],
+          ...(item.blurhash ? { blurhash: item.blurhash } : {}),
+          ...(item.width && item.height
+            ? { width: item.width, height: item.height }
+            : {}),
+        });
       }
 
       const next = (UnprocessedKeys?.[metaTableName]?.Keys ?? []) as Array<{ id: string }>;

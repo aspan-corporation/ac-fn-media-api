@@ -34,6 +34,13 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ id: item.id, tags: item.tags ?? [] }),
+      body: JSON.stringify({
+        id: item.id,
+        tags: item.tags ?? [],
+        ...(item.blurhash ? { blurhash: item.blurhash } : {}),
+        ...(item.width && item.height
+          ? { width: item.width, height: item.height }
+          : {}),
+      }),
     };
   };
