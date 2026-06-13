@@ -2,6 +2,7 @@ import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
+import { requireAdmin } from "../shared/auth.js";
 
 const albumsTableName = assertEnvVar("AC_ALBUMS_TABLE_NAME");
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
@@ -56,6 +57,11 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     const { logger, acServices = {} } = ctx as unknown as AcContext;
     const { dynamoDBService } = acServices;
     assert(dynamoDBService, "dynamoDBService is required in context.acServices");
+
+    // Deleting an album (and cascading the membership-tag removal) is an
+    // admin-only operation.
+    const denied = requireAdmin(event);
+    if (denied) return denied;
 
     const id = decodeURIComponent(event.pathParameters?.id ?? "");
     if (!id) return json(400, { message: "id is required" });

@@ -1,6 +1,7 @@
 import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
+import { requireAdmin, TAG_HIDDEN } from "../shared/auth.js";
 
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
 
@@ -86,6 +87,13 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       }
     } catch {
       return json(400, { message: "Invalid JSON body" });
+    }
+
+    // Writing the hidden tag (in bulk) is an admin-only operation. Other
+    // bulk tag edits stay open to any signed-in member.
+    if (merge.some((t) => t.key === TAG_HIDDEN)) {
+      const denied = requireAdmin(event);
+      if (denied) return denied;
     }
 
     // ── Derive sentinel updates implied by the merge set ──────────────────

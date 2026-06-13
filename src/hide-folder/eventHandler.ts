@@ -1,6 +1,7 @@
 import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
+import { requireAdmin } from "../shared/auth.js";
 
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
 
@@ -48,6 +49,10 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     const { logger, acServices = {} } = ctx as unknown as AcContext;
     const { dynamoDBService } = acServices;
     assert(dynamoDBService, "dynamoDBService is required in context.acServices");
+
+    // Hiding/unhiding is an admin-only operation.
+    const denied = requireAdmin(event);
+    if (denied) return denied;
 
     // ── 1. Parse and validate inputs ─────────────────────────────────────
     const rawId = decodeURIComponent(event.pathParameters?.id ?? "");

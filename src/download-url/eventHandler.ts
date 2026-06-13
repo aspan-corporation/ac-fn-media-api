@@ -28,7 +28,14 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     }
 
     const filename = path.basename(id);
-    const disposition = `attachment; filename="${filename}"`;
+    // Build Content-Disposition safely. The ASCII fallback drops anything that
+    // could break out of the quoted-string or inject a header (quotes,
+    // backslash, and control chars incl. CR/LF, which are < 0x20). Modern
+    // browsers honour the RFC 5987 `filename*` form for the real (UTF-8) name.
+    const asciiFallback = filename
+      .replace(/[^\x20-\x7e]/g, "_")
+      .replace(/["\\]/g, "_");
+    const disposition = `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 
     const url = await sourceS3Service.getSignedUrl({
       Bucket: mediaBucketName,

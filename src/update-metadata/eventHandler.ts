@@ -2,6 +2,7 @@ import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
 import { validateTagsInput } from "../shared/tagValidation.js";
+import { hasHiddenTag, requireAdmin } from "../shared/auth.js";
 
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
 
@@ -56,6 +57,14 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     });
 
     const existingTags = (existing?.tags ?? []) as Array<{ key: string; value: string }>;
+
+    // Adding or removing the hidden tag is an admin-only operation. Other tag
+    // edits (favorites, albums, user tags) stay open to any signed-in member.
+    if (hasHiddenTag(existingTags) !== hasHiddenTag(userTags)) {
+      const denied = requireAdmin(event);
+      if (denied) return denied;
+    }
+
     const systemTags = existingTags.filter((t) => t.key.startsWith(SYSTEM_TAU_PREFIX));
 
     const finalTags = [...userTags, ...systemTags];
