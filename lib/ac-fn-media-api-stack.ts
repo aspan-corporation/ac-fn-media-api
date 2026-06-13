@@ -500,5 +500,84 @@ export class AcFnMediaApiStack extends cdk.Stack {
       parameterName: "/ac/api/download-url-fn-arn",
       stringValue: downloadUrlFunction.functionArn,
     });
+
+    // GetMediaCookie Lambda — mints short-lived CloudFront signed cookies for
+    // /thumbs/*, replacing the per-request Lambda@Edge auth on media loads.
+    // All signing config (private key, key id, distribution domain) is read
+    // from SSM at runtime, so this Lambda has no deploy-time dependency on the
+    // ac-infra-managed parameters and can deploy before them.
+    const getMediaCookieFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "GetMediaCookieProcessor",
+      {
+        functionName: "MediaApiGetMediaCookieProcessor",
+        entry: path.join(currentDirPath, "../src/get-media-cookie/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(10),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+        },
+        bundling: {
+          // @aws-sdk/client-ssm ships in the Node 22 Lambda runtime; keep it
+          // external. @aws-sdk/cloudfront-signer is NOT in the runtime, so it
+          // must be bundled — replacing the default "@aws-sdk/*" external list
+          // with just client-ssm lets esbuild bundle the signer.
+          externalModules: ["@aws-sdk/client-ssm"],
+        },
+      },
+    );
+
+    // Read the three signing parameters at runtime (private key is a
+    // SecureString → needs kms:Decrypt on the default SSM key).
+    getMediaCookieFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ssm:GetParameters"],
+        resources: [
+          cdk.Arn.format(
+            {
+              service: "ssm",
+              resource: "parameter",
+              resourceName: "ac/cloudfront/media-signing-private-key",
+            },
+            this,
+          ),
+          cdk.Arn.format(
+            {
+              service: "ssm",
+              resource: "parameter",
+              resourceName: "ac/cloudfront/media-signing-key-id",
+            },
+            this,
+          ),
+          cdk.Arn.format(
+            {
+              service: "ssm",
+              resource: "parameter",
+              resourceName: "ac/cloudfront/distribution-domain-name",
+            },
+            this,
+          ),
+        ],
+      }),
+    );
+    getMediaCookieFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["kms:Decrypt"],
+        resources: ["*"],
+        conditions: {
+          StringEquals: {
+            "kms:ViaService": `ssm.${this.region}.amazonaws.com`,
+          },
+        },
+      }),
+    );
+
+    new ssm.StringParameter(this, "GetMediaCookieFunctionArnParameter", {
+      parameterName: "/ac/api/media-cookie-fn-arn",
+      stringValue: getMediaCookieFunction.functionArn,
+    });
   }
 }
