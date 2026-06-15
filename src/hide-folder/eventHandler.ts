@@ -34,9 +34,10 @@ const CASCADE_CONCURRENCY = 25;
  *
  * Order of operations:
  *   1. Validate and normalise the folder prefix (must end with "/")
- *   2. Scan the meta table for all items whose id begins_with the prefix
- *   3. For each item: read-modify-write the tags array, throttled by
- *      CASCADE_CONCURRENCY
+ *   2. Scan the meta table (projecting id + tags) for all items whose id
+ *      begins_with the prefix
+ *   3. For each item: modify the scanned tags array and UpdateItem, throttled
+ *      by CASCADE_CONCURRENCY
  *
  * Performance note: DynamoDB Scan reads every item in the table then filters
  * client-side. For a ~100k-item family library this is ~100 ms. The write
@@ -76,38 +77,40 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     logger.info("hideFolder", { prefix, hidden });
 
     // ── 2. Scan meta table for all items under the folder prefix ─────────
-    const matchingIds: string[] = [];
+    // The scan already reads each matching row, so project `tags` too and skip
+    // the per-item GetItem in step 3 — that halves the read operations (one
+    // scan pass instead of scan + N GetItems). The read-modify-write below is
+    // non-transactional, but this is an admin-only, low-frequency operation so
+    // using the scan-time tags carries the same (negligible) race risk the
+    // separate GetItem did.
+    type Tag = { key: string; value: string };
+    const matches: Array<{ id: string; tags: Tag[] }> = [];
     let exclusiveStartKey: Record<string, unknown> | undefined;
 
     do {
       const result = await dynamoDBService.scanCommand({
         TableName: metaTableName,
         FilterExpression: "begins_with(#id, :prefix)",
-        ExpressionAttributeNames: { "#id": "id" },
+        ExpressionAttributeNames: { "#id": "id", "#tags": "tags" },
         ExpressionAttributeValues: { ":prefix": prefix },
-        ProjectionExpression: "#id",
+        ProjectionExpression: "#id, #tags",
         ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
       });
 
-      for (const item of (result.Items ?? []) as Array<{ id: string }>) {
-        if (typeof item.id === "string") matchingIds.push(item.id);
+      for (const item of (result.Items ?? []) as Array<{ id: string; tags?: Tag[] }>) {
+        if (typeof item.id === "string") {
+          matches.push({ id: item.id, tags: item.tags ?? [] });
+        }
       }
       exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
     } while (exclusiveStartKey);
 
-    logger.info("hideFolder scan complete", { prefix, matchingCount: matchingIds.length });
+    logger.info("hideFolder scan complete", { prefix, matchingCount: matches.length });
 
     // ── 3. Apply hidden tag to each matching item ─────────────────────────
     let updatedCount = 0;
 
-    const applyToOne = async (id: string): Promise<void> => {
-      const { Item } = await dynamoDBService.getCommand({
-        TableName: metaTableName,
-        Key: { id },
-      });
-      if (!Item) return;
-
-      const tags = (Item.tags ?? []) as Array<{ key: string; value: string }>;
+    const applyToOne = async ({ id, tags }: { id: string; tags: Tag[] }): Promise<void> => {
       const alreadyHidden = tags.some((t) => t.key === TAG_HIDDEN);
 
       if (hidden && alreadyHidden) return; // already hidden — no-op
@@ -126,8 +129,8 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       updatedCount++;
     };
 
-    for (let i = 0; i < matchingIds.length; i += CASCADE_CONCURRENCY) {
-      const slice = matchingIds.slice(i, i + CASCADE_CONCURRENCY);
+    for (let i = 0; i < matches.length; i += CASCADE_CONCURRENCY) {
+      const slice = matches.slice(i, i + CASCADE_CONCURRENCY);
       await Promise.all(slice.map(applyToOne));
     }
 
@@ -136,7 +139,7 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     return json(200, {
       prefix,
       hidden,
-      matchedCount: matchingIds.length,
+      matchedCount: matches.length,
       updatedCount,
     });
   };
