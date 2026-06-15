@@ -579,5 +579,55 @@ export class AcFnMediaApiStack extends cdk.Stack {
       parameterName: "/ac/api/media-cookie-fn-arn",
       stringValue: getMediaCookieFunction.functionArn,
     });
+
+    // Diary Lambda — GET/PUT/DELETE /api/diary/{id}. Writes Markdown entries to
+    // the dedicated diary bucket (created in AcAppStack) and indexes them in the
+    // shared meta table. The originals/media bucket gets NO grant here — diary
+    // writes are isolated to the diary bucket. Bucket name follows the
+    // AcAppStack naming convention (IAM can't use SSM dynamic refs, same as the
+    // table ARNs above).
+    const diaryBucketName = `acappstack-diary-${this.region}-${this.account}`;
+    const diaryBucketArn = `arn:aws:s3:::${diaryBucketName}`;
+
+    const diaryFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "DiaryProcessor",
+      {
+        functionName: "MediaApiDiaryProcessor",
+        entry: path.join(currentDirPath, "../src/diary/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(15),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
+          AC_DIARY_BUCKET_NAME: diaryBucketName,
+        },
+      },
+    );
+
+    diaryFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:BatchWriteItem",
+        ],
+        resources: [metaTableArn],
+      }),
+    );
+    diaryFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`${diaryBucketArn}/*`],
+      }),
+    );
+
+    new ssm.StringParameter(this, "DiaryFunctionArnParameter", {
+      parameterName: "/ac/api/diary-fn-arn",
+      stringValue: diaryFunction.functionArn,
+    });
   }
 }
