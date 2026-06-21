@@ -604,6 +604,17 @@ export class AcFnMediaApiStack extends cdk.Stack {
           ...commonEnv,
           AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
           AC_DIARY_BUCKET_NAME: diaryBucketName,
+          // Processing queues — diary-uploaded images are dispatched here on
+          // save so they get thumbnails + search indexing (no media state
+          // machine exists in this account; we drive the queues directly).
+          AC_META_QUEUE_URL: ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/meta-extractor/queue-url",
+          ),
+          AC_RESIZER_QUEUE_URL: ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/resizer/queue-url",
+          ),
         },
       },
     );
@@ -622,6 +633,22 @@ export class AcFnMediaApiStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
         resources: [`${diaryBucketArn}/*`],
+      }),
+    );
+    // Dispatch diary images to the meta-extractor + resizer queues on save.
+    diaryFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["sqs:SendMessage"],
+        resources: [
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/meta-extractor/queue-arn",
+          ),
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/resizer/queue-arn",
+          ),
+        ],
       }),
     );
 

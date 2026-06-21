@@ -15,12 +15,19 @@ import {
   TEXT_TOKEN_PREFIX,
   tokenizeText,
 } from "@aspan-corporation/ac-shared";
-import type { S3Service } from "@aspan-corporation/ac-shared";
+import type { S3Service, SQSService, DynamoDBService } from "@aspan-corporation/ac-shared";
+import { Logger } from "@aws-lambda-powertools/logger";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
 
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
 const diaryBucketName = assertEnvVar("AC_DIARY_BUCKET_NAME");
+// SQS queues of the shared processing Lambdas. Diary-uploaded images are pushed
+// here on save (the same SQS-driven model ac-commander uses) so they get
+// thumbnails + search indexing like media-bucket photos. There is no media
+// state-machine in this account, so we dispatch the queues directly.
+const metaQueueUrl = assertEnvVar("AC_META_QUEUE_URL");
+const resizerQueueUrl = assertEnvVar("AC_RESIZER_QUEUE_URL");
 
 const headers = { "Content-Type": "application/json" };
 const json = (statusCode: number, body: unknown): APIGatewayProxyResult => ({
@@ -147,6 +154,60 @@ const ensureDiaryFolderMarkers = async (
   }
 };
 
+// SQS body the resizer/meta-extractor recordHandlers expect: an EventBridge-
+// shaped event with detail.bucket.name + detail.object.{key,size} and NO
+// taskToken (so each Lambda processes standalone). Mirrors ac-commander's
+// MessageDispatchProcessor envelope.
+const processingMessageBody = (key: string, size: number): string =>
+  JSON.stringify({
+    "detail-type": "FileUploaded",
+    source: "ac.diary",
+    detail: {
+      bucket: { name: diaryBucketName },
+      object: { key, size },
+    },
+  });
+
+/**
+ * Push newly-embedded diary-bucket images to the meta-extractor + resizer queues
+ * so they get indexed + thumbnailed like media-bucket photos. Skips images that
+ * already have a meta item (already processed) so re-saving doesn't reprocess.
+ * Best-effort: never fails the save.
+ */
+const dispatchDiaryImageProcessing = async (
+  sqsService: SQSService,
+  s3: S3Service,
+  dynamoDBService: DynamoDBService,
+  markdown: string,
+  logger: Logger,
+): Promise<void> => {
+  const keys = [
+    ...new Set(
+      extractEmbeddedPhotoKeys(markdown).filter(
+        (k) => k.startsWith(DIARY_PREFIX) && isAllowedExtension(k),
+      ),
+    ),
+  ];
+  for (const key of keys) {
+    try {
+      const { Item } = await dynamoDBService.getCommand({
+        TableName: metaTableName,
+        Key: { id: key },
+      });
+      if (Item) continue; // already processed
+      const head = await s3.headObject({ Bucket: diaryBucketName, Key: key });
+      const body = processingMessageBody(key, head.ContentLength ?? 0);
+      await Promise.all([
+        sqsService.sendMessage({ QueueUrl: metaQueueUrl, MessageBody: body }),
+        sqsService.sendMessage({ QueueUrl: resizerQueueUrl, MessageBody: body }),
+      ]);
+      logger.info("dispatched diary image for processing", { key });
+    } catch (err) {
+      logger.warn("diary image dispatch failed", { key, err: String(err) });
+    }
+  }
+};
+
 /**
  * /api/diary/{id} — one lambda, dispatched by HTTP method. `id` is the
  * URL-encoded diary key `diary/YYYY/MM/YYYYMMDD.md`; the entry date is derived
@@ -159,7 +220,7 @@ const ensureDiaryFolderMarkers = async (
 export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult> =
   async (event, ctx) => {
     const { logger, acServices = {} } = ctx as unknown as AcContext;
-    const { dynamoDBService, sourceS3Service } = acServices;
+    const { dynamoDBService, sourceS3Service, sqsService } = acServices;
     assert(dynamoDBService, "dynamoDBService is required in context.acServices");
     assert(sourceS3Service, "sourceS3Service is required in context.acServices");
 
@@ -340,6 +401,18 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
           ":folder": deriveFolder(id),
         },
       });
+
+      // Dispatch any newly-embedded diary-bucket images for processing
+      // (thumbnails + search). Best-effort; never fails the save.
+      if (sqsService) {
+        await dispatchDiaryImageProcessing(
+          sqsService,
+          sourceS3Service,
+          dynamoDBService,
+          markdown,
+          logger,
+        );
+      }
 
       logger.info("diary saved", { id, tokenCount: tokenTags.length });
       return json(200, { id, tags: finalTags });
