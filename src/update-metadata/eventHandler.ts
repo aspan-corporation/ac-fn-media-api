@@ -8,6 +8,13 @@ const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
 
 const SYSTEM_TAU_PREFIX = "ac:tau:";
 
+// Concurrent DynamoDB write pressure cap for the folder→items tag cascade.
+// Matches src/hide-folder/eventHandler.ts (well below the table's burst WCU).
+const CASCADE_CONCURRENCY = 25;
+
+type Tag = { key: string; value: string };
+const sameTag = (a: Tag, b: Tag) => a.key === b.key && a.value === b.value;
+
 const headers = { "Content-Type": "application/json" };
 const json = (statusCode: number, body: unknown): APIGatewayProxyResult => ({
   statusCode,
@@ -77,8 +84,85 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       ReturnValues: "ALL_NEW",
     });
 
+    // ── Folder tag propagation ────────────────────────────────────────────
+    // Editing a FOLDER's tags cascades the change to every item inside it,
+    // recursively through subfolders: tags added to the folder are added to
+    // each descendant, tags removed from the folder are removed from each.
+    // Folder ids carry a trailing slash, so that is the folder test (and the
+    // begins_with prefix). Only user tags cascade — ac:tau:* system tags were
+    // already stripped from `userTags` by validateTagsInput, and each item's
+    // own system tags are preserved untouched. Cascaded writes flow through
+    // the meta-table stream → search reindex, same as hide-folder/bulk-tag.
+    let cascadedCount = 0;
+    if (id.endsWith("/")) {
+      const oldUserTags = existingTags.filter(
+        (t) => !t.key.startsWith(SYSTEM_TAU_PREFIX),
+      );
+      const added = userTags.filter((n) => !oldUserTags.some((o) => sameTag(o, n)));
+      const removed = oldUserTags.filter((o) => !userTags.some((n) => sameTag(o, n)));
+
+      if (added.length || removed.length) {
+        // Scan all descendants (id begins_with the folder prefix), projecting
+        // the tags we need to read-modify-write. Pattern mirrors hide-folder.
+        const matches: Array<{ id: string; tags: Tag[] }> = [];
+        let exclusiveStartKey: Record<string, unknown> | undefined;
+        do {
+          const result = await dynamoDBService.scanCommand({
+            TableName: metaTableName,
+            FilterExpression: "begins_with(#id, :prefix)",
+            ExpressionAttributeNames: { "#id": "id", "#tags": "tags" },
+            ExpressionAttributeValues: { ":prefix": id },
+            ProjectionExpression: "#id, #tags",
+            ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+          });
+          for (const item of (result.Items ?? []) as Array<{ id: string; tags?: Tag[] }>) {
+            // Skip the folder's own item — its tags were just written above.
+            if (typeof item.id === "string" && item.id !== id) {
+              matches.push({ id: item.id, tags: item.tags ?? [] });
+            }
+          }
+          exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+        } while (exclusiveStartKey);
+
+        logger.info("updateMetadata folder cascade", {
+          id,
+          added: added.length,
+          removed: removed.length,
+          descendants: matches.length,
+        });
+
+        const applyToOne = async ({ id: itemId, tags }: { id: string; tags: Tag[] }) => {
+          let next = removed.length
+            ? tags.filter((t) => !removed.some((r) => sameTag(r, t)))
+            : tags;
+          for (const a of added) {
+            if (!next.some((t) => sameTag(t, a))) next = [...next, a];
+          }
+          // Only write when the tag set actually changed (avoids needless
+          // writes and stream/reindex churn on items that already match).
+          if (next.length === tags.length && next.every((t, i) => sameTag(t, tags[i]))) {
+            return;
+          }
+          await dynamoDBService.updateCommand({
+            TableName: metaTableName,
+            Key: { id: itemId },
+            UpdateExpression: "SET tags = :tags",
+            ExpressionAttributeValues: { ":tags": next },
+          });
+          cascadedCount++;
+        };
+
+        for (let i = 0; i < matches.length; i += CASCADE_CONCURRENCY) {
+          await Promise.all(matches.slice(i, i + CASCADE_CONCURRENCY).map(applyToOne));
+        }
+
+        logger.info("updateMetadata folder cascade complete", { id, cascadedCount });
+      }
+    }
+
     return json(200, {
       id: updated?.id ?? id,
       tags: updated?.tags ?? finalTags,
+      ...(id.endsWith("/") ? { cascadedCount } : {}),
     });
   };
