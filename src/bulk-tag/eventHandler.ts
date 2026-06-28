@@ -56,23 +56,19 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     assert(dynamoDBService, "dynamoDBService is required in context.acServices");
 
     // ── Parse + validate body ─────────────────────────────────────────────
-    let ids: string[];
+    // Targets are EITHER an explicit `ids` list (≤500, e.g. multi-select) OR a
+    // `folder` prefix, in which case the merge cascades to every media item
+    // inside the folder recursively (used by the folder meta-edit quick assign).
+    let ids: string[] = [];
     let merge: Array<{ key: string; value: string }>;
+    let folderPrefix: string | null = null;
 
     try {
       const body = JSON.parse(event.body ?? "{}");
 
-      if (!Array.isArray(body.ids) || body.ids.length === 0) {
-        return json(400, { message: "body.ids must be a non-empty array" });
-      }
-      if (body.ids.length > 500) {
-        return json(400, { message: "body.ids must not exceed 500 items" });
-      }
       if (!Array.isArray(body.merge) || body.merge.length === 0) {
         return json(400, { message: "body.merge must be a non-empty array" });
       }
-
-      ids = body.ids.filter((id: unknown) => typeof id === "string" && id.trim());
       merge = body.merge.filter(
         (t: unknown) =>
           t !== null &&
@@ -81,9 +77,23 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
           (t as any).key.trim() &&
           typeof (t as any).value === "string",
       );
+      if (!merge.length) {
+        return json(400, { message: "merge must contain valid entries" });
+      }
 
-      if (!ids.length || !merge.length) {
-        return json(400, { message: "ids and merge must contain valid entries" });
+      if (typeof body.folder === "string" && body.folder.trim()) {
+        folderPrefix = body.folder.endsWith("/") ? body.folder : `${body.folder}/`;
+      } else {
+        if (!Array.isArray(body.ids) || body.ids.length === 0) {
+          return json(400, { message: "body.ids or body.folder is required" });
+        }
+        if (body.ids.length > 500) {
+          return json(400, { message: "body.ids must not exceed 500 items" });
+        }
+        ids = body.ids.filter((id: unknown) => typeof id === "string" && id.trim());
+        if (!ids.length) {
+          return json(400, { message: "ids must contain valid entries" });
+        }
       }
     } catch {
       return json(400, { message: "Invalid JSON body" });
@@ -94,6 +104,30 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     if (merge.some((t) => t.key === TAG_HIDDEN)) {
       const denied = requireAdmin(event);
       if (denied) return denied;
+    }
+
+    // Folder mode: resolve the prefix to the media item ids inside it. Skip
+    // folder-marker items (id ending in "/") so date/country tags only land on
+    // actual photos/videos, not folder rows (which would otherwise pollute
+    // date search). Pattern mirrors hide-folder's begins_with scan.
+    if (folderPrefix) {
+      let exclusiveStartKey: Record<string, unknown> | undefined;
+      do {
+        const result = await dynamoDBService.scanCommand({
+          TableName: metaTableName,
+          FilterExpression: "begins_with(#id, :prefix)",
+          ExpressionAttributeNames: { "#id": "id" },
+          ExpressionAttributeValues: { ":prefix": folderPrefix },
+          ProjectionExpression: "#id",
+          ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+        });
+        for (const item of (result.Items ?? []) as Array<{ id?: string }>) {
+          if (typeof item.id === "string" && !item.id.endsWith("/")) ids.push(item.id);
+        }
+        exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      } while (exclusiveStartKey);
+      logger.info("bulkTag folder cascade", { folderPrefix, matched: ids.length });
+      if (!ids.length) return json(200, { updatedCount: 0 });
     }
 
     // ── Derive sentinel updates implied by the merge set ──────────────────
