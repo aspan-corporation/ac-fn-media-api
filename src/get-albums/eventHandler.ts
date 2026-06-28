@@ -44,6 +44,8 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       .map((item: Record<string, unknown>) => ({
         id: item.id as string,
         name: item.name as string,
+        // Present only on "synthetic" albums (saved searches).
+        ...(item.search ? { search: item.search } : {}),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
 
