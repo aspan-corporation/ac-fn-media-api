@@ -13,7 +13,11 @@ process.env.AC_TAU_MEDIA_SEARCH_TABLE_NAME = "test-search";
 process.env.AC_TAU_MEDIA_META_TABLE_NAME = "test-meta";
 
 import { Logger } from "@aws-lambda-powertools/logger";
-import { lambdaHandler } from "../src/search/eventHandler";
+import { lambdaHandler, clearTagCache } from "../src/search/eventHandler";
+
+// The handler memoizes tag id-sets in module scope across invocations; reset
+// between cases so each test sees its own fake table.
+beforeEach(() => clearTagCache());
 
 const TAG_HIDDEN = "ac:ediacara:hidden";
 
@@ -161,5 +165,44 @@ describe("search", () => {
     expect(meta.mock.calls).toHaveLength(1);
     const keys = meta.mock.calls[0][0].RequestItems["test-meta"].Keys;
     expect(keys).toHaveLength(5);
+  });
+
+  it("memoizes tag id-sets across requests (second search skips the Query)", async () => {
+    const rows: SearchRow[] = [
+      { id: "p1", key: "ac:tau:country", value: "France" },
+      { id: "p2", key: "ac:tau:country", value: "France" },
+    ];
+    const search = makeFakeSearchTable(rows);
+    const meta = makeFakeMetaTable(new Map(rows.map((r) => [r.id, []])));
+    const body = {
+      searchInput: { filter: { tags: [{ key: "ac:tau:country", value: "France" }] } },
+      pageSize: 10,
+    };
+
+    await invoke(search, meta, body);
+    const callsAfterFirst = search.mock.calls.length;
+    await invoke(search, meta, body);
+
+    // The country tag-set query is served from cache the second time; the only
+    // other query is the hidden-set query, which is also cached — so the second
+    // search issues no new search-table Queries at all.
+    expect(search.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("re-queries after the cache is cleared (bounded staleness)", async () => {
+    const rows: SearchRow[] = [{ id: "p1", key: "ac:tau:country", value: "France" }];
+    const search = makeFakeSearchTable(rows);
+    const meta = makeFakeMetaTable(new Map([["p1", []]]));
+    const body = {
+      searchInput: { filter: { tags: [{ key: "ac:tau:country", value: "France" }] } },
+      pageSize: 10,
+    };
+
+    await invoke(search, meta, body);
+    const callsAfterFirst = search.mock.calls.length;
+    clearTagCache();
+    await invoke(search, meta, body);
+
+    expect(search.mock.calls.length).toBeGreaterThan(callsAfterFirst);
   });
 });
