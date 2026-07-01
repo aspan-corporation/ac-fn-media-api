@@ -124,6 +124,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/list-folder/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
         timeout: cdk.Duration.seconds(10),
         logGroup: centralLogGroup,
@@ -150,6 +151,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/get-metadata/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
         timeout: cdk.Duration.seconds(10),
         logGroup: centralLogGroup,
@@ -176,6 +178,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/update-metadata/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 256,
         timeout: cdk.Duration.seconds(15),
         logGroup: centralLogGroup,
@@ -186,11 +189,12 @@ export class AcFnMediaApiStack extends cdk.Stack {
       },
     );
 
-    // GetItem to read existing system tags, UpdateItem to write merged tags.
+    // GetItem to read existing system tags, UpdateItem to write merged tags,
+    // Query on the `by-folder` GSI for the folder-tag cascade (subtree walk).
     updateMetadataFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
-        resources: [metaTableArn],
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Query"],
+        resources: [metaTableArn, `${metaTableArn}/index/*`],
       }),
     );
 
@@ -203,6 +207,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/get-tags/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
         timeout: cdk.Duration.seconds(15),
         logGroup: centralLogGroup,
@@ -229,6 +234,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/search/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 1024,
         timeout: cdk.Duration.seconds(30),
         logGroup: centralLogGroup,
@@ -283,6 +289,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/get-albums/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 256,
         timeout: cdk.Duration.seconds(10),
         logGroup: centralLogGroup,
@@ -309,6 +316,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/create-album/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 256,
         timeout: cdk.Duration.seconds(15),
         logGroup: centralLogGroup,
@@ -350,6 +358,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/delete-album/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
         timeout: cdk.Duration.seconds(30),
         logGroup: centralLogGroup,
@@ -403,6 +412,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/bulk-tag/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
         timeout: cdk.Duration.seconds(29),
         logGroup: centralLogGroup,
@@ -415,8 +425,10 @@ export class AcFnMediaApiStack extends cdk.Stack {
 
     bulkTagFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
-        resources: [metaTableArn],
+        // Query on the `by-folder` GSI (folder-cascade mode walks the subtree);
+        // GetItem + UpdateItem for the per-item read-modify-write tag merge.
+        actions: ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [metaTableArn, `${metaTableArn}/index/*`],
       }),
     );
 
@@ -426,10 +438,10 @@ export class AcFnMediaApiStack extends cdk.Stack {
     });
 
     // 10. HideFolder Lambda — recursively hides/unhides all items under a folder
-    // prefix. Needs Scan (to enumerate all items with begins_with) plus
+    // prefix. Walks the `by-folder` GSI (Query) to enumerate the subtree, plus
     // GetItem + UpdateItem for the read-modify-write tag merge. Timeout is
     // generous (29 s = API GW max) because large folders can touch thousands
-    // of items; memory is 512 MB to keep the scan fast.
+    // of items.
     const hideFolderFunction = new lambdaNodejs.NodejsFunction(
       this,
       "HideFolderProcessor",
@@ -438,6 +450,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/hide-folder/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
         timeout: cdk.Duration.seconds(29),
         logGroup: centralLogGroup,
@@ -450,8 +463,10 @@ export class AcFnMediaApiStack extends cdk.Stack {
 
     hideFolderFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["dynamodb:Scan", "dynamodb:GetItem", "dynamodb:UpdateItem"],
-        resources: [metaTableArn],
+        // Query the `by-folder` GSI to walk the subtree (replaces the old Scan);
+        // GetItem (folder's own marker) + UpdateItem for the tag merge.
+        actions: ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [metaTableArn, `${metaTableArn}/index/*`],
       }),
     );
 
@@ -469,6 +484,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/download-url/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 256,
         timeout: cdk.Duration.seconds(10),
         logGroup: centralLogGroup,
@@ -514,6 +530,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/get-media-cookie/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 256,
         timeout: cdk.Duration.seconds(10),
         logGroup: centralLogGroup,
@@ -597,6 +614,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
         entry: path.join(currentDirPath, "../src/diary/app.ts"),
         handler: "handler",
         runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
         timeout: cdk.Duration.seconds(15),
         logGroup: centralLogGroup,

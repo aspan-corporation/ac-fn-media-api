@@ -1,3 +1,4 @@
+import { jest } from "@jest/globals";
 /**
  * Tests for create-album, focused on "synthetic" albums (saved searches):
  * a valid `search` payload is stored on the item; an absent/invalid one is
@@ -10,7 +11,7 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { lambdaHandler } from "../src/create-album/eventHandler";
 
 const invoke = async (body: unknown) => {
-  const put = jest.fn(async () => ({}));
+  const put = jest.fn(async (_input: any) => ({}));
   const ctx = {
     logger: new Logger({ serviceName: "test" }),
     acServices: { dynamoDBService: { putCommand: put } },

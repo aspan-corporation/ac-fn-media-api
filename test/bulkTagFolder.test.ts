@@ -1,3 +1,4 @@
+import { jest } from "@jest/globals";
 /**
  * Tests for bulk-tag folder mode: a `folder` prefix cascades the merge to every
  * media item inside it (recursively), skipping folder-marker rows.
@@ -10,14 +11,26 @@ import { lambdaHandler } from "../src/bulk-tag/eventHandler";
 
 type Tag = { key: string; value: string };
 
+// Immediate parent folder of an id — mirrors the `folder` attribute the
+// resizer/meta-extractor stamp on each item (deriveFolder in ac-shared).
+const parentFolder = (id: string): string => {
+  const s = id.endsWith("/") ? id.slice(0, -1) : id;
+  const i = s.lastIndexOf("/");
+  return i < 0 ? "/" : s.slice(0, i + 1);
+};
+
 const makeDb = (items: Array<{ id: string; tags: Tag[] }>) => {
   const store = new Map(items.map((i) => [i.id, { id: i.id, tags: [...i.tags] }]));
   return {
     store,
-    scanCommand: jest.fn(async ({ ExpressionAttributeValues }: any) => {
-      const prefix = ExpressionAttributeValues[":prefix"] as string;
+    // Fake of the meta table's `by-folder` GSI: return items whose immediate
+    // parent folder equals the queried :folder value (projecting id + tags).
+    queryCommand: jest.fn(async ({ ExpressionAttributeValues }: any) => {
+      const folder = ExpressionAttributeValues[":folder"] as string;
       return {
-        Items: [...store.values()].filter((i) => i.id.startsWith(prefix)).map((i) => ({ id: i.id })),
+        Items: [...store.values()]
+          .filter((i) => parentFolder(i.id) === folder)
+          .map((i) => ({ id: i.id, tags: i.tags })),
         LastEvaluatedKey: undefined,
       };
     }),

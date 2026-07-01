@@ -1,3 +1,4 @@
+import { jest } from "@jest/globals";
 /**
  * Tests for the search Lambda handler.
  *

@@ -2,6 +2,7 @@ import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
 import { requireAdmin, TAG_HIDDEN } from "../shared/auth.js";
+import { collectFolderTree, FolderQueryClient } from "../shared/folderTree.js";
 
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
 
@@ -106,26 +107,18 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       if (denied) return denied;
     }
 
-    // Folder mode: resolve the prefix to the media item ids inside it. Skip
-    // folder-marker items (id ending in "/") so date/country tags only land on
-    // actual photos/videos, not folder rows (which would otherwise pollute
-    // date search). Pattern mirrors hide-folder's begins_with scan.
+    // Folder mode: resolve the prefix to the media item ids inside it via the
+    // `by-folder` GSI (reads only the subtree, not the whole table). Marker
+    // rows (ids ending in "/") are excluded so date/country tags only land on
+    // actual photos/videos, not folder rows (which would pollute date search).
     if (folderPrefix) {
-      let exclusiveStartKey: Record<string, unknown> | undefined;
-      do {
-        const result = await dynamoDBService.scanCommand({
-          TableName: metaTableName,
-          FilterExpression: "begins_with(#id, :prefix)",
-          ExpressionAttributeNames: { "#id": "id" },
-          ExpressionAttributeValues: { ":prefix": folderPrefix },
-          ProjectionExpression: "#id",
-          ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
-        });
-        for (const item of (result.Items ?? []) as Array<{ id?: string }>) {
-          if (typeof item.id === "string" && !item.id.endsWith("/")) ids.push(item.id);
-        }
-        exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
-      } while (exclusiveStartKey);
+      const items = await collectFolderTree(
+        dynamoDBService as unknown as FolderQueryClient,
+        metaTableName,
+        folderPrefix,
+        { includeMarkers: false },
+      );
+      for (const item of items) ids.push(item.id);
       logger.info("bulkTag folder cascade", { folderPrefix, matched: ids.length });
       if (!ids.length) return json(200, { updatedCount: 0 });
     }

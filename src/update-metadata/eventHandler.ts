@@ -3,6 +3,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda
 import assert from "node:assert";
 import { validateTagsInput } from "../shared/tagValidation.js";
 import { hasHiddenTag, requireAdmin } from "../shared/auth.js";
+import { collectFolderTree, FolderQueryClient } from "../shared/folderTree.js";
 
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
 
@@ -88,8 +89,9 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     // Editing a FOLDER's tags cascades the change to every item inside it,
     // recursively through subfolders: tags added to the folder are added to
     // each descendant, tags removed from the folder are removed from each.
-    // Folder ids carry a trailing slash, so that is the folder test (and the
-    // begins_with prefix). Only user tags cascade — ac:tau:* system tags were
+    // Folder ids carry a trailing slash, so that is the folder test. Descendants
+    // are found by walking the `by-folder` GSI. Only user tags cascade —
+    // ac:tau:* system tags were
     // already stripped from `userTags` by validateTagsInput, and each item's
     // own system tags are preserved untouched. Cascaded writes flow through
     // the meta-table stream → search reindex, same as hide-folder/bulk-tag.
@@ -102,27 +104,16 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       const removed = oldUserTags.filter((o) => !userTags.some((n) => sameTag(o, n)));
 
       if (added.length || removed.length) {
-        // Scan all descendants (id begins_with the folder prefix), projecting
-        // the tags we need to read-modify-write. Pattern mirrors hide-folder.
-        const matches: Array<{ id: string; tags: Tag[] }> = [];
-        let exclusiveStartKey: Record<string, unknown> | undefined;
-        do {
-          const result = await dynamoDBService.scanCommand({
-            TableName: metaTableName,
-            FilterExpression: "begins_with(#id, :prefix)",
-            ExpressionAttributeNames: { "#id": "id", "#tags": "tags" },
-            ExpressionAttributeValues: { ":prefix": id },
-            ProjectionExpression: "#id, #tags",
-            ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
-          });
-          for (const item of (result.Items ?? []) as Array<{ id: string; tags?: Tag[] }>) {
-            // Skip the folder's own item — its tags were just written above.
-            if (typeof item.id === "string" && item.id !== id) {
-              matches.push({ id: item.id, tags: item.tags ?? [] });
-            }
-          }
-          exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
-        } while (exclusiveStartKey);
+        // Walk the `by-folder` GSI for all descendants (markers + items),
+        // reading only the subtree instead of Scanning the whole table. The
+        // walk returns descendants only (never the folder's own marker, whose
+        // tags were just written above), matching the prior Scan-minus-self.
+        const matches: Array<{ id: string; tags: Tag[] }> = await collectFolderTree(
+          dynamoDBService as unknown as FolderQueryClient,
+          metaTableName,
+          id,
+          { includeMarkers: true },
+        );
 
         logger.info("updateMetadata folder cascade", {
           id,

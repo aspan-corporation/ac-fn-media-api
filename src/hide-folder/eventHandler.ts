@@ -2,6 +2,7 @@ import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
 import { requireAdmin } from "../shared/auth.js";
+import { collectFolderTree, FolderQueryClient } from "../shared/folderTree.js";
 
 const metaTableName = assertEnvVar("AC_TAU_MEDIA_META_TABLE_NAME");
 
@@ -34,16 +35,17 @@ const CASCADE_CONCURRENCY = 25;
  *
  * Order of operations:
  *   1. Validate and normalise the folder prefix (must end with "/")
- *   2. Scan the meta table (projecting id + tags) for all items whose id
- *      begins_with the prefix
- *   3. For each item: modify the scanned tags array and UpdateItem, throttled
- *      by CASCADE_CONCURRENCY
+ *   2. Walk the `by-folder` GSI to collect the folder's own marker plus every
+ *      item recursively inside it (projecting id + tags)
+ *   3. For each item: modify the tags array and UpdateItem, throttled by
+ *      CASCADE_CONCURRENCY
  *
- * Performance note: DynamoDB Scan reads every item in the table then filters
- * client-side. For a ~100k-item family library this is ~100 ms. The write
- * fan-out (one UpdateItem per matching item) dominates wall-clock time. With
- * CASCADE_CONCURRENCY=25 and ~5 ms per round-trip, 1000 items → ~200 ms.
- * Total stays well within the 29-second API Gateway limit.
+ * Performance note: the previous implementation Scanned the whole meta table
+ * (~91k rows) on every call and filtered client-side. The GSI walk reads only
+ * the subtree under the prefix, cutting read cost by orders of magnitude for
+ * anything but the root. The write fan-out (one UpdateItem per matching item)
+ * dominates wall-clock time. With CASCADE_CONCURRENCY=25 and ~5 ms per
+ * round-trip, 1000 items → ~200 ms — well within the 29-second API GW limit.
  */
 export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult> =
   async (event, ctx) => {
@@ -76,36 +78,31 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
 
     logger.info("hideFolder", { prefix, hidden });
 
-    // ── 2. Scan meta table for all items under the folder prefix ─────────
-    // The scan already reads each matching row, so project `tags` too and skip
-    // the per-item GetItem in step 3 — that halves the read operations (one
-    // scan pass instead of scan + N GetItems). The read-modify-write below is
-    // non-transactional, but this is an admin-only, low-frequency operation so
-    // using the scan-time tags carries the same (negligible) race risk the
-    // separate GetItem did.
+    // ── 2. Collect the folder subtree via the `by-folder` GSI ────────────
+    // The walk reads only items under the prefix (not the whole table). It
+    // returns the descendants; the folder's own marker (id === prefix) has its
+    // parent as its `folder` value, so we fetch it directly and prepend it —
+    // hiding it is what removes the folder from its parent's listing.
+    // The read-modify-write below is non-transactional, but this is an
+    // admin-only, low-frequency operation so the (negligible) race risk is the
+    // same the previous scan-time-tags approach carried.
     type Tag = { key: string; value: string };
-    const matches: Array<{ id: string; tags: Tag[] }> = [];
-    let exclusiveStartKey: Record<string, unknown> | undefined;
+    const matches: Array<{ id: string; tags: Tag[] }> = await collectFolderTree(
+      dynamoDBService as unknown as FolderQueryClient,
+      metaTableName,
+      prefix,
+      { includeMarkers: true },
+    );
 
-    do {
-      const result = await dynamoDBService.scanCommand({
-        TableName: metaTableName,
-        FilterExpression: "begins_with(#id, :prefix)",
-        ExpressionAttributeNames: { "#id": "id", "#tags": "tags" },
-        ExpressionAttributeValues: { ":prefix": prefix },
-        ProjectionExpression: "#id, #tags",
-        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
-      });
+    const { Item: selfMarker } = await dynamoDBService.getCommand({
+      TableName: metaTableName,
+      Key: { id: prefix },
+    });
+    if (selfMarker && typeof selfMarker.id === "string") {
+      matches.unshift({ id: selfMarker.id, tags: (selfMarker.tags ?? []) as Tag[] });
+    }
 
-      for (const item of (result.Items ?? []) as Array<{ id: string; tags?: Tag[] }>) {
-        if (typeof item.id === "string") {
-          matches.push({ id: item.id, tags: item.tags ?? [] });
-        }
-      }
-      exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
-    } while (exclusiveStartKey);
-
-    logger.info("hideFolder scan complete", { prefix, matchingCount: matches.length });
+    logger.info("hideFolder walk complete", { prefix, matchingCount: matches.length });
 
     // ── 3. Apply hidden tag to each matching item ─────────────────────────
     let updatedCount = 0;

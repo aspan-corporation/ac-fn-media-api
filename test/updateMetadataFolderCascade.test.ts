@@ -1,3 +1,4 @@
+import { jest } from "@jest/globals";
 /**
  * Tests for the folder→items tag cascade in the update-metadata handler.
  *
@@ -17,10 +18,16 @@ type Item = { id: string; tags: Tag[] };
 
 const sameTag = (a: Tag, b: Tag) => a.key === b.key && a.value === b.value;
 
+const parentFolder = (id: string): string => {
+  const s = id.endsWith("/") ? id.slice(0, -1) : id;
+  const i = s.lastIndexOf("/");
+  return i < 0 ? "/" : s.slice(0, i + 1);
+};
+
 /**
  * In-memory fake of the bits of dynamoDBService the handler uses:
- * getCommand (read folder item), updateCommand (write any item), scanCommand
- * (begins_with descendants). Backed by a single map keyed on id.
+ * getCommand (read folder item), updateCommand (write any item), queryCommand
+ * (by-folder GSI subtree walk). Backed by a single map keyed on id.
  */
 const makeFakeDb = (items: Item[]) => {
   const store = new Map(items.map((i) => [i.id, { ...i, tags: [...i.tags] }]));
@@ -38,9 +45,9 @@ const makeFakeDb = (items: Item[]) => {
       updates.push({ id: Key.id, tags });
       return { Attributes: { id: Key.id, tags } };
     }),
-    scanCommand: jest.fn(async ({ ExpressionAttributeValues }: any) => {
-      const prefix = ExpressionAttributeValues[":prefix"] as string;
-      const Items = [...store.values()].filter((i) => i.id.startsWith(prefix));
+    queryCommand: jest.fn(async ({ ExpressionAttributeValues }: any) => {
+      const folder = ExpressionAttributeValues[":folder"] as string;
+      const Items = [...store.values()].filter((i) => parentFolder(i.id) === folder);
       return { Items, LastEvaluatedKey: undefined };
     }),
   };
@@ -93,6 +100,9 @@ describe("update-metadata folder tag cascade", () => {
     const db = makeFakeDb([
       { id: "media/trip/", tags: [{ key: "trip", value: "italy" }] },
       { id: "media/trip/a.jpg", tags: [{ key: "trip", value: "italy" }, { key: "rating", value: "5" }] },
+      // Sub-folder marker (present in real data — makes the GSI walk reachable);
+      // it has no `trip` tag, so it is a no-op for the removal.
+      { id: "media/trip/sub/", tags: [] },
       { id: "media/trip/sub/b.jpg", tags: [{ key: "trip", value: "italy" }] },
     ]);
 
@@ -131,7 +141,7 @@ describe("update-metadata folder tag cascade", () => {
     const { body } = await invoke(db, "media/trip/a.jpg", [{ key: "trip", value: "italy" }]);
 
     expect(body.cascadedCount).toBeUndefined();
-    expect(db.scanCommand).not.toHaveBeenCalled();
+    expect(db.queryCommand).not.toHaveBeenCalled();
     // b.jpg untouched.
     expect(db.store.get("media/trip/b.jpg")!.tags).toEqual([]);
   });

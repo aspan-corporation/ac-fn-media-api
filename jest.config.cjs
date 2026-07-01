@@ -8,6 +8,9 @@ module.exports = {
   testMatch: ["**/*.test.ts"],
   preset: "ts-jest/presets/default-esm",
   extensionsToTreatAsEsm: [".ts"],
+  // Handlers read env vars at module-load time; ESM hoists imports above a
+  // test file's top-level assignments, so set the env before any module loads.
+  setupFiles: ["<rootDir>/test/jest.setup-env.cjs"],
   moduleNameMapper: {
     // Handlers import sibling files with explicit `.js` (ESM convention).
     // Strip the suffix so ts-jest resolves the source `.ts` file.
