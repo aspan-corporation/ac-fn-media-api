@@ -5,9 +5,12 @@ import {
   DIARY_PREFIX,
   diaryPreview,
   extractEmbeddedPhotoKeys,
+  getKeyExtension,
+  isAllowedAudioExtension,
   isAllowedExtension,
   isDiaryKey,
   parseDiaryKeyDate,
+  TAG_DIARY_AUDIO,
   TAG_DIARY_ENTRY,
   TAG_DIARY_PHOTO,
   TAG_DIARY_PREVIEW,
@@ -37,6 +40,13 @@ const json = (statusCode: number, body: unknown): APIGatewayProxyResult => ({
 });
 
 type Tag = { key: string; value: string };
+
+// Playback MIME by audio extension (see AUDIO_EXTENSIONS in ac-shared).
+const AUDIO_CONTENT_TYPES: Record<string, string> = {
+  m4a: "audio/mp4",
+  webm: "audio/webm",
+  ogg: "audio/ogg",
+};
 
 // Date tag keys this handler owns — re-derived from the diary key on each write.
 // (Other ac:tau:* tags, e.g. ac:tau:virtualAlbum, are preserved.)
@@ -225,13 +235,13 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     assert(sourceS3Service, "sourceS3Service is required in context.acServices");
 
     // ── POST /api/diary/upload-url ─────────────────────────────────────
-    // Hand the browser a presigned PUT so it can upload an image straight to
-    // the diary bucket (bytes never pass through the API). Body: { id, filename }
-    // where `id` is the entry's diary key. The object lands at
-    // diary/YYYY/MM/<filename> — YYYY/MM from the entry date — auto-suffixed so
-    // it never overwrites an existing photo. Once written, the diary-bucket
-    // EventBridge rule runs it through the media pipeline (thumbnails + search),
-    // making it render and search exactly like a media-bucket photo.
+    // Hand the browser a presigned PUT so it can upload an image or audio
+    // recording straight to the diary bucket (bytes never pass through the
+    // API). Body: { id, filename } where `id` is the entry's diary key. The
+    // object lands at diary/YYYY/MM/<filename> — YYYY/MM from the entry date —
+    // auto-suffixed so it never overwrites a prior upload. Images are later
+    // dispatched to the processing queues on save (thumbnails + search);
+    // audio stays entry-only and is played back via /media-url.
     if (event.resource?.endsWith("/upload-url")) {
       if (event.httpMethod !== "POST") {
         return json(405, { message: `Method ${event.httpMethod} not allowed` });
@@ -251,9 +261,9 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
         });
       }
       const safe = sanitizeFilename(filename);
-      if (!safe || !isAllowedExtension(safe)) {
+      if (!safe || !(isAllowedExtension(safe) || isAllowedAudioExtension(safe))) {
         return json(400, {
-          message: "filename must be an image with a supported extension",
+          message: "filename must be an image or audio file with a supported extension",
         });
       }
       const mm = String(d.month).padStart(2, "0");
@@ -280,6 +290,45 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
       });
       logger.info("diary upload url issued", { key });
       return json(200, { url, key });
+    }
+
+    // ── POST /api/diary/media-url ──────────────────────────────────────
+    // Hand the browser a presigned GET for an audio recording embedded in an
+    // entry. Audio lives in the diary bucket but never enters the media
+    // pipeline (no thumbnails, no CloudFront path), so playback streams
+    // straight from S3 via a short-lived signed URL.
+    if (event.resource?.endsWith("/media-url")) {
+      if (event.httpMethod !== "POST") {
+        return json(405, { message: `Method ${event.httpMethod} not allowed` });
+      }
+      let muBody: Record<string, unknown>;
+      try {
+        muBody = JSON.parse(event.body ?? "{}");
+      } catch {
+        return json(400, { message: "Invalid JSON body" });
+      }
+      const key = typeof muBody.key === "string" ? muBody.key : "";
+      // Only keys the upload-url action can have produced: diary/YYYY/MM/ +
+      // a sanitizeFilename-shaped leaf with an allowed audio extension. This
+      // shuts out traversal / arbitrary-key requests from hand-edited markdown.
+      const wellFormed = /^diary\/\d{4}\/\d{2}\/[A-Za-z0-9._ ()-]+$/.test(key);
+      if (!wellFormed || !isAllowedAudioExtension(key)) {
+        return json(400, { message: "key must be a diary audio key" });
+      }
+      const url = await sourceS3Service.getSignedUrl({
+        Bucket: diaryBucketName,
+        Key: key,
+        // Force the right playback MIME even if the stored Content-Type is off.
+        ResponseContentType: AUDIO_CONTENT_TYPES[getKeyExtension(key)],
+      });
+      logger.info("diary media url issued", { key });
+      return {
+        statusCode: 200,
+        // no-store: the URL expires in an hour — never let the browser HTTP
+        // cache hand a stale signed URL to a refetch.
+        headers: { ...headers, "Cache-Control": "no-store" },
+        body: JSON.stringify({ url }),
+      };
     }
 
     const id = decodeURIComponent(event.pathParameters?.id ?? "");
@@ -377,8 +426,10 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
         key: TEXT_TOKEN_PREFIX + tok,
         value: "",
       }));
+      // Embedded media links: audio recordings get their own tag so they don't
+      // inflate the entry's photo count; everything else stays a photo link.
       const photoTags: Tag[] = extractEmbeddedPhotoKeys(markdown).map((k) => ({
-        key: TAG_DIARY_PHOTO,
+        key: isAllowedAudioExtension(k) ? TAG_DIARY_AUDIO : TAG_DIARY_PHOTO,
         value: k,
       }));
 
