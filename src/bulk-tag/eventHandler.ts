@@ -74,9 +74,9 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
         (t: unknown) =>
           t !== null &&
           typeof t === "object" &&
-          typeof (t as any).key === "string" &&
-          (t as any).key.trim() &&
-          typeof (t as any).value === "string",
+          typeof (t as Record<string, unknown>).key === "string" &&
+          (t as Record<string, string>).key.trim() &&
+          typeof (t as Record<string, unknown>).value === "string",
       );
       if (!merge.length) {
         return json(400, { message: "merge must contain valid entries" });

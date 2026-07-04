@@ -1,0 +1,17 @@
+{
+  // ts-jest-only tsconfig (see jest.config.cjs). The main build uses NodeNext,
+  // under which these CJS-context test files may not import the ESM-only
+  // ac-shared package (its exports map has no `require` condition → TS2307).
+  // Bundler resolution matches the `import` condition regardless, which is
+  // exactly what happens at runtime: jest runs ESM via
+  // --experimental-vm-modules and maps the package to the test stub anyway.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    // Tests keep helper vars around for readability.
+    "noUnusedLocals": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

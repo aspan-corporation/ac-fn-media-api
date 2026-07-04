@@ -16,7 +16,7 @@
     "destroy": "cdk destroy",
     "bootstrap": "cdk bootstrap",
     "unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "lint": "eslint '*.ts' --quiet --fix",
+    "lint": "eslint . --quiet",
     "compile": "tsc",
     "test": "npm run compile && npm run unit",
     "start:local": "ts-node-esm",

@@ -27,7 +27,7 @@ module.exports = {
       "ts-jest",
       {
         useESM: true,
-        tsconfig: "tsconfig.json",
+        tsconfig: "tsconfig.test.json",
         // Suppress ts-jest's hybrid-module warning — the source uses
         // NodeNext for runtime, but tests run via ts-jest's CJS bridge.
         diagnostics: { ignoreCodes: [151002] },
