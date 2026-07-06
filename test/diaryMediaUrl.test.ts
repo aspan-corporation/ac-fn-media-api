@@ -146,6 +146,95 @@ describe("POST /api/diary/upload-url with audio filenames", () => {
   });
 });
 
+describe("POST /api/diary/upload-url device hints", () => {
+  const uploadEvent = (hints?: unknown) => ({
+    resource: "/api/diary/upload-url",
+    httpMethod: "POST",
+    body: JSON.stringify({
+      id: "diary/2026/07/20260704.md",
+      filename: "photo.jpg",
+      ...(hints !== undefined ? { hints } : {}),
+    }),
+  });
+
+  const signedMetadata = (services: ReturnType<typeof makeFakeServices>) =>
+    (services.sourceS3Service.getSignedUploadUrl.mock.calls[0] as any[])[0]
+      .Metadata;
+
+  it("embeds valid date and location hints as S3 user metadata", async () => {
+    const services = makeFakeServices();
+    const { status } = await invoke(
+      services,
+      uploadEvent({
+        date: "2026-07-06T10:30:00.000Z",
+        latitude: 48.8584,
+        longitude: 2.2945,
+      }),
+    );
+    expect(status).toBe(200);
+    expect(signedMetadata(services)).toEqual({
+      "hint-date": "2026-07-06T10:30:00.000Z",
+      "hint-latitude": "48.8584",
+      "hint-longitude": "2.2945",
+    });
+  });
+
+  it("omits Metadata entirely when no hints are sent", async () => {
+    const services = makeFakeServices();
+    const { status } = await invoke(services, uploadEvent());
+    expect(status).toBe(200);
+    expect(signedMetadata(services)).toBeUndefined();
+  });
+
+  it("keeps the date hint when coordinates are invalid", async () => {
+    const services = makeFakeServices();
+    const { status } = await invoke(
+      services,
+      uploadEvent({
+        date: "2026-07-06T10:30:00.000Z",
+        latitude: 91, // out of range
+        longitude: 2.2945,
+      }),
+    );
+    expect(status).toBe(200);
+    expect(signedMetadata(services)).toEqual({
+      "hint-date": "2026-07-06T10:30:00.000Z",
+    });
+  });
+
+  it("drops a lone coordinate — they only make sense as a pair", async () => {
+    const services = makeFakeServices();
+    const { status } = await invoke(services, uploadEvent({ latitude: 48.8584 }));
+    expect(status).toBe(200);
+    expect(signedMetadata(services)).toBeUndefined();
+  });
+
+  it("accepts (0, 0) as valid coordinates", async () => {
+    const services = makeFakeServices();
+    await invoke(services, uploadEvent({ latitude: 0, longitude: 0 }));
+    expect(signedMetadata(services)).toEqual({
+      "hint-latitude": "0",
+      "hint-longitude": "0",
+    });
+  });
+
+  it.each([
+    ["junk hints object", "nonsense"],
+    ["null hints", null],
+    ["array hints", [1, 2]],
+    ["unparseable date", { date: "not-a-date" }],
+    ["far-future date", { date: "2999-01-01T00:00:00.000Z" }],
+    ["pre-epoch date", { date: "1899-01-01T00:00:00.000Z" }],
+    ["string coordinates", { latitude: "48.8", longitude: "2.29" }],
+    ["NaN coordinates", { latitude: NaN, longitude: NaN }],
+  ])("never 400s on bad hints (%s) — upload proceeds without them", async (_l, hints) => {
+    const services = makeFakeServices();
+    const { status } = await invoke(services, uploadEvent(hints));
+    expect(status).toBe(200);
+    expect(signedMetadata(services)).toBeUndefined();
+  });
+});
+
 describe("PUT /api/diary/{id} with embedded audio", () => {
   it("tags audio as ac:diary:audio, photos as ac:diary:photo, and dispatches only the photo", async () => {
     const photoKey = "diary/2026/07/photo.jpg";
