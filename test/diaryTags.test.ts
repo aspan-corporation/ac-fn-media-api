@@ -13,6 +13,9 @@ process.env.AC_TAU_MEDIA_META_TABLE_NAME = "test-meta";
 process.env.AC_DIARY_BUCKET_NAME = "test-diary-bucket";
 process.env.AC_META_QUEUE_URL = "https://sqs/test-meta-queue";
 process.env.AC_RESIZER_QUEUE_URL = "https://sqs/test-resizer-queue";
+process.env.AC_VIDEO_META_QUEUE_URL = "https://sqs/test-video-meta-queue";
+process.env.AC_VIDEO_ENCODER_QUEUE_URL = "https://sqs/test-video-encoder-queue";
+process.env.AC_VIDEO_THUMBS_QUEUE_URL = "https://sqs/test-video-thumbs-queue";
 
 import { Logger } from "@aws-lambda-powertools/logger";
 import { TAG_DIARY_ENTRY } from "@aspan-corporation/ac-shared";
@@ -29,8 +32,12 @@ const makeFakeServices = ({ seedTags = [] as Tag[] } = {}) => {
     });
   }
   const sourceS3Service = {
-    getSignedUrl: jest.fn(async ({ Key }: any) => `https://signed.example/${Key}`),
-    getSignedUploadUrl: jest.fn(async ({ Key }: any) => `https://upload.example/${Key}`),
+    getSignedUrl: jest.fn(
+      async ({ Key }: any) => `https://signed.example/${Key}`,
+    ),
+    getSignedUploadUrl: jest.fn(
+      async ({ Key }: any) => `https://upload.example/${Key}`,
+    ),
     headObject: jest.fn(async () => {
       throw new Error("NotFound");
     }),
@@ -39,7 +46,9 @@ const makeFakeServices = ({ seedTags = [] as Tag[] } = {}) => {
     deleteObject: jest.fn(async () => ({})),
   };
   const dynamoDBService = {
-    getCommand: jest.fn(async ({ Key }: any) => ({ Item: dbStore.get(Key.id) })),
+    getCommand: jest.fn(async ({ Key }: any) => ({
+      Item: dbStore.get(Key.id),
+    })),
     updateCommand: jest.fn(async ({ Key, ExpressionAttributeValues }: any) => {
       const tags = (ExpressionAttributeValues?.[":tags"] ?? []) as Tag[];
       dbStore.set(Key.id, { id: Key.id, tags });
@@ -168,7 +177,10 @@ describe("PUT /api/diary/{id} user tags", () => {
       services,
       putEvent({ title: "T", markdown: "x" }),
     );
-    expect(body.tags as Tag[]).toContainEqual({ key: "trip", value: "keep-me" });
+    expect(body.tags as Tag[]).toContainEqual({
+      key: "trip",
+      value: "keep-me",
+    });
   });
 
   it("replaces all user tags with an empty supplied array (removal)", async () => {

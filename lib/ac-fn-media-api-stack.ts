@@ -249,7 +249,11 @@ export class AcFnMediaApiStack extends cdk.Stack {
     // BatchGetItem is implicitly granted by GetItem on the same resource.
     searchFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:BatchGetItem"],
+        actions: [
+          "dynamodb:Query",
+          "dynamodb:GetItem",
+          "dynamodb:BatchGetItem",
+        ],
         resources: [metaTableArn, searchTableArn],
       }),
     );
@@ -490,14 +494,16 @@ export class AcFnMediaApiStack extends cdk.Stack {
         logGroup: centralLogGroup,
         environment: {
           ...commonEnv,
-          AC_TAU_MEDIA_MEDIA_BUCKET_NAME: ssm.StringParameter.valueForStringParameter(
-            this,
-            "/ac/storage/media-bucket-name",
-          ),
-          AC_TAU_MEDIA_MEDIA_BUCKET_ACCESS_ROLE_ARN: ssm.StringParameter.valueForStringParameter(
-            this,
-            "/ac/iam/media-bucket-access-role-arn",
-          ),
+          AC_TAU_MEDIA_MEDIA_BUCKET_NAME:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/storage/media-bucket-name",
+            ),
+          AC_TAU_MEDIA_MEDIA_BUCKET_ACCESS_ROLE_ARN:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/iam/media-bucket-access-role-arn",
+            ),
         },
       },
     );
@@ -633,6 +639,23 @@ export class AcFnMediaApiStack extends cdk.Stack {
             this,
             "/ac/resizer/queue-url",
           ),
+          // Diary-uploaded videos run the full video pipeline (metadata +
+          // encode + thumbnail) — same three steps the library state machine
+          // runs for a video, dispatched directly.
+          AC_VIDEO_META_QUEUE_URL: ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/video-meta-extractor/queue-url",
+          ),
+          AC_VIDEO_ENCODER_QUEUE_URL:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/video-encoder/queue-url",
+            ),
+          AC_VIDEO_THUMBS_QUEUE_URL:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/video-thumbnail-processor/queue-url",
+            ),
         },
       },
     );
@@ -653,7 +676,9 @@ export class AcFnMediaApiStack extends cdk.Stack {
         resources: [`${diaryBucketArn}/*`],
       }),
     );
-    // Dispatch diary images to the meta-extractor + resizer queues on save.
+    // Dispatch diary images to the meta-extractor + resizer queues on save,
+    // and diary videos to the video-meta-extractor + video-encoder +
+    // video-thumbs queues.
     diaryFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["sqs:SendMessage"],
@@ -665,6 +690,18 @@ export class AcFnMediaApiStack extends cdk.Stack {
           ssm.StringParameter.valueForStringParameter(
             this,
             "/ac/resizer/queue-arn",
+          ),
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/video-meta-extractor/queue-arn",
+          ),
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/video-encoder/queue-arn",
+          ),
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/video-thumbnail-processor/queue-arn",
           ),
         ],
       }),

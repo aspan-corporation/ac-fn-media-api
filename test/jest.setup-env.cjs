@@ -17,3 +17,6 @@ process.env.AC_TAU_MEDIA_MEDIA_BUCKET_ACCESS_ROLE_ARN =
 process.env.AC_DIARY_BUCKET_NAME = "test-diary-bucket";
 process.env.AC_META_QUEUE_URL = "https://sqs.test/meta";
 process.env.AC_RESIZER_QUEUE_URL = "https://sqs.test/resizer";
+process.env.AC_VIDEO_META_QUEUE_URL = "https://sqs.test/video-meta";
+process.env.AC_VIDEO_ENCODER_QUEUE_URL = "https://sqs.test/video-encoder";
+process.env.AC_VIDEO_THUMBS_QUEUE_URL = "https://sqs.test/video-thumbs";

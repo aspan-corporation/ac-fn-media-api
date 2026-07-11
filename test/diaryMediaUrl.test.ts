@@ -11,6 +11,9 @@ process.env.AC_TAU_MEDIA_META_TABLE_NAME = "test-meta";
 process.env.AC_DIARY_BUCKET_NAME = "test-diary-bucket";
 process.env.AC_META_QUEUE_URL = "https://sqs/test-meta-queue";
 process.env.AC_RESIZER_QUEUE_URL = "https://sqs/test-resizer-queue";
+process.env.AC_VIDEO_META_QUEUE_URL = "https://sqs/test-video-meta-queue";
+process.env.AC_VIDEO_ENCODER_QUEUE_URL = "https://sqs/test-video-encoder-queue";
+process.env.AC_VIDEO_THUMBS_QUEUE_URL = "https://sqs/test-video-thumbs-queue";
 
 import { Logger } from "@aws-lambda-powertools/logger";
 import { TAG_DIARY_AUDIO, TAG_DIARY_PHOTO } from "@aspan-corporation/ac-shared";
@@ -21,8 +24,12 @@ type Tag = { key: string; value: string };
 const makeFakeServices = ({ existingObjects = new Set<string>() } = {}) => {
   const dbStore = new Map<string, { id: string; tags: Tag[] }>();
   const sourceS3Service = {
-    getSignedUrl: jest.fn(async ({ Key }: any) => `https://signed.example/${Key}`),
-    getSignedUploadUrl: jest.fn(async ({ Key }: any) => `https://upload.example/${Key}`),
+    getSignedUrl: jest.fn(
+      async ({ Key }: any) => `https://signed.example/${Key}`,
+    ),
+    getSignedUploadUrl: jest.fn(
+      async ({ Key }: any) => `https://upload.example/${Key}`,
+    ),
     // resolveUniqueKey probes with headObject; a throw means "free to use".
     headObject: jest.fn(async ({ Key }: any) => {
       if (!existingObjects.has(Key)) throw new Error("NotFound");
@@ -33,7 +40,9 @@ const makeFakeServices = ({ existingObjects = new Set<string>() } = {}) => {
     deleteObject: jest.fn(async () => ({})),
   };
   const dynamoDBService = {
-    getCommand: jest.fn(async ({ Key }: any) => ({ Item: dbStore.get(Key.id) })),
+    getCommand: jest.fn(async ({ Key }: any) => ({
+      Item: dbStore.get(Key.id),
+    })),
     updateCommand: jest.fn(async ({ Key, ExpressionAttributeValues }: any) => {
       const tags = (ExpressionAttributeValues?.[":tags"] ?? []) as Tag[];
       dbStore.set(Key.id, { id: Key.id, tags });
@@ -71,7 +80,10 @@ describe("POST /api/diary/media-url", () => {
   it("returns a presigned GET with the right bucket, key and playback MIME", async () => {
     const services = makeFakeServices();
     const key = "diary/2026/07/recording-20260704-101500.m4a";
-    const { status, headers, body } = await invoke(services, mediaUrlEvent({ key }));
+    const { status, headers, body } = await invoke(
+      services,
+      mediaUrlEvent({ key }),
+    );
 
     expect(status).toBe(200);
     expect(body.url).toBe(`https://signed.example/${key}`);
@@ -114,8 +126,12 @@ describe("POST /api/diary/media-url", () => {
     const services = makeFakeServices();
     expect((await invoke(services, mediaUrlEvent("{nope"))).status).toBe(400);
     expect(
-      (await invoke(services, mediaUrlEvent({ key: "diary/2026/07/a.m4a" }, "GET")))
-        .status,
+      (
+        await invoke(
+          services,
+          mediaUrlEvent({ key: "diary/2026/07/a.m4a" }, "GET"),
+        )
+      ).status,
     ).toBe(405);
   });
 });
@@ -204,7 +220,10 @@ describe("POST /api/diary/upload-url device hints", () => {
 
   it("drops a lone coordinate — they only make sense as a pair", async () => {
     const services = makeFakeServices();
-    const { status } = await invoke(services, uploadEvent({ latitude: 48.8584 }));
+    const { status } = await invoke(
+      services,
+      uploadEvent({ latitude: 48.8584 }),
+    );
     expect(status).toBe(200);
     expect(signedMetadata(services)).toBeUndefined();
   });
@@ -227,12 +246,15 @@ describe("POST /api/diary/upload-url device hints", () => {
     ["pre-epoch date", { date: "1899-01-01T00:00:00.000Z" }],
     ["string coordinates", { latitude: "48.8", longitude: "2.29" }],
     ["NaN coordinates", { latitude: NaN, longitude: NaN }],
-  ])("never 400s on bad hints (%s) — upload proceeds without them", async (_l, hints) => {
-    const services = makeFakeServices();
-    const { status } = await invoke(services, uploadEvent(hints));
-    expect(status).toBe(200);
-    expect(signedMetadata(services)).toBeUndefined();
-  });
+  ])(
+    "never 400s on bad hints (%s) — upload proceeds without them",
+    async (_l, hints) => {
+      const services = makeFakeServices();
+      const { status } = await invoke(services, uploadEvent(hints));
+      expect(status).toBe(200);
+      expect(signedMetadata(services)).toBeUndefined();
+    },
+  );
 });
 
 describe("PUT /api/diary/{id} with embedded audio", () => {
