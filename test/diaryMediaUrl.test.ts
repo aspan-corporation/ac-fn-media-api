@@ -258,7 +258,7 @@ describe("POST /api/diary/upload-url device hints", () => {
 });
 
 describe("PUT /api/diary/{id} with embedded audio", () => {
-  it("tags audio as ac:diary:audio, photos as ac:diary:photo, and dispatches only the photo", async () => {
+  it("tags audio as ac:diary:audio, photos as ac:diary:photo, and dispatches the photo to meta+resizer and the audio to meta only", async () => {
     const photoKey = "diary/2026/07/photo.jpg";
     const audioKey = "diary/2026/07/recording-20260704-101500.m4a";
     // Both objects exist in the bucket (headObject succeeds → dispatch can size them).
@@ -285,11 +285,37 @@ describe("PUT /api/diary/{id} with embedded audio", () => {
     expect(tags.filter((t) => t.key === TAG_DIARY_PHOTO)).toHaveLength(1);
     expect(tags.filter((t) => t.key === TAG_DIARY_AUDIO)).toHaveLength(1);
 
-    // Only the image goes to the meta + resizer queues; audio never enters
-    // the processing pipeline (entry-only by design).
-    const sent = services.sqsService.sendMessage.mock.calls.map(
-      ([arg]: any) => JSON.parse(arg.MessageBody).detail.object.key,
+    // The photo goes to meta + resizer (thumbnail); the audio goes to the
+    // meta queue ONLY — it gets a searchable meta item but no thumbnail.
+    const sends = services.sqsService.sendMessage.mock.calls.map(
+      ([arg]: any) => ({
+        queue: arg.QueueUrl,
+        key: JSON.parse(arg.MessageBody).detail.object.key,
+      }),
     );
-    expect(sent).toEqual([photoKey, photoKey]);
+    // photo → both queues
+    expect(sends).toContainEqual({
+      queue: "https://sqs.test/meta",
+      key: photoKey,
+    });
+    expect(sends).toContainEqual({
+      queue: "https://sqs.test/resizer",
+      key: photoKey,
+    });
+    // audio → meta only
+    expect(sends).toContainEqual({
+      queue: "https://sqs.test/meta",
+      key: audioKey,
+    });
+    expect(
+      sends.filter((s: { key: string }) => s.key === audioKey),
+    ).toHaveLength(1);
+    // audio never hits the resizer or any video queue
+    expect(
+      sends.filter(
+        (s: { key: string; queue: string }) =>
+          s.key === audioKey && s.queue !== "https://sqs.test/meta",
+      ),
+    ).toHaveLength(0);
   });
 });
