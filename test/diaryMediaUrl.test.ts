@@ -30,7 +30,9 @@ const makeFakeServices = ({ existingObjects = new Set<string>() } = {}) => {
     getSignedUploadUrl: jest.fn(
       async ({ Key }: any) => `https://upload.example/${Key}`,
     ),
-    // resolveUniqueKey probes with headObject; a throw means "free to use".
+    // Upload keys are now UUIDs (no HeadObject probing); headObject is still
+    // used on PUT save to size an embedded object before dispatch — a throw
+    // means the object isn't present.
     headObject: jest.fn(async ({ Key }: any) => {
       if (!existingObjects.has(Key)) throw new Error("NotFound");
       return { ContentLength: 123 };
@@ -96,6 +98,14 @@ describe("POST /api/diary/media-url", () => {
     expect(headers["Cache-Control"]).toBe("no-store");
   });
 
+  it("accepts a UUID-shaped audio key (the new upload-url key format)", async () => {
+    const services = makeFakeServices();
+    const key = "diary/2026/07/1f0b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d.m4a";
+    const { status, body } = await invoke(services, mediaUrlEvent({ key }));
+    expect(status).toBe(200);
+    expect(body.url).toBe(`https://signed.example/${key}`);
+  });
+
   it.each([
     ["webm", "audio/webm"],
     ["ogg", "audio/ogg"],
@@ -143,15 +153,31 @@ describe("POST /api/diary/upload-url with audio filenames", () => {
     body: JSON.stringify({ id: "diary/2026/07/20260704.md", filename }),
   });
 
-  it("accepts a MediaRecorder audio filename", async () => {
+  const UUID_KEY = (ext: string) =>
+    new RegExp(
+      `^diary/2026/07/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.${ext}$`,
+    );
+
+  it("mints a UUID key with the file's extension (no HeadObject probing)", async () => {
     const services = makeFakeServices();
     const { status, body } = await invoke(
       services,
       uploadEvent("recording-20260704-101500.m4a"),
     );
     expect(status).toBe(200);
-    expect(body.key).toBe("diary/2026/07/recording-20260704-101500.m4a");
+    expect(body.key).toMatch(UUID_KEY("m4a"));
     expect(body.url).toBeDefined();
+    // The key is unique by construction — we never probe S3 to pick a name.
+    expect(services.sourceS3Service.headObject).not.toHaveBeenCalled();
+  });
+
+  it("gives every upload a distinct key even for the same filename", async () => {
+    const services = makeFakeServices();
+    const a = (await invoke(services, uploadEvent("photo.jpg"))).body.key;
+    const b = (await invoke(services, uploadEvent("photo.jpg"))).body.key;
+    expect(a).toMatch(UUID_KEY("jpg"));
+    expect(b).toMatch(UUID_KEY("jpg"));
+    expect(a).not.toBe(b);
   });
 
   it("still accepts images and still rejects unsupported extensions", async () => {

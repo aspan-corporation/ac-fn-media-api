@@ -73,13 +73,20 @@ describe("POST /api/diary/upload-url with video filenames", () => {
     body: JSON.stringify({ id: "diary/2026/07/20260704.md", filename }),
   });
 
-  it.each(["clip.mp4", "clip.mov"])(
-    "accepts a %s filename",
-    async (filename) => {
+  it.each([
+    ["clip.mp4", "mp4"],
+    ["clip.mov", "mov"],
+  ])(
+    "accepts %s and mints a UUID key with its extension",
+    async (filename, ext) => {
       const services = makeFakeServices();
       const { status, body } = await invoke(services, uploadEvent(filename));
       expect(status).toBe(200);
-      expect(body.key).toBe(`diary/2026/07/${filename}`);
+      expect(body.key).toMatch(
+        new RegExp(
+          `^diary/2026/07/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.${ext}$`,
+        ),
+      );
       expect(body.url).toBeDefined();
     },
   );
