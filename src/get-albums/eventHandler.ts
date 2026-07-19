@@ -1,6 +1,7 @@
 import { AcContext, assertEnvVar } from "@aspan-corporation/ac-shared";
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Handler } from "aws-lambda";
 import assert from "node:assert";
+import { normalizeAlbum } from "../shared/albumNormalize.js";
 
 const albumsTableName = assertEnvVar("AC_ALBUMS_TABLE_NAME");
 
@@ -41,12 +42,14 @@ export const lambdaHandler: Handler<APIGatewayProxyEvent, APIGatewayProxyResult>
     });
 
     const albums = (result.Items ?? [])
-      .map((item: Record<string, unknown>) => ({
-        id: item.id as string,
-        name: item.name as string,
-        // Present only on "synthetic" albums (saved searches).
-        ...(item.search ? { search: item.search } : {}),
-      }))
+      .map((item: Record<string, unknown>) =>
+        normalizeAlbum({
+          id: item.id as string,
+          name: item.name as string,
+          kind: item.kind,
+          search: item.search,
+        }),
+      )
       .sort((a, b) => a.name.localeCompare(b.name));
 
     return {

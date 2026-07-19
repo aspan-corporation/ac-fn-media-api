@@ -33,9 +33,12 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
       "/ac/data/meta-table-name",
     );
-    const searchTableName = ssm.StringParameter.valueForStringParameter(
+    // Reshaped date-ordered index (pk=`key#value`, sk=`sortDate#id`). Every
+    // reader in this stack (search, delete-album) uses V2; the legacy V1
+    // table is frozen (see plan Part 4) and no longer referenced here.
+    const searchTableV2Name = ssm.StringParameter.valueForStringParameter(
       this,
-      "/ac/data/search-table-name",
+      "/ac/data/search-table-v2-name",
     );
     const tagsTableName = ssm.StringParameter.valueForStringParameter(
       this,
@@ -52,7 +55,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
     // convention (stackName-suffix) and the bucket name is a fixed constant.
     const dataStackName = "AcDataStack";
     const metaTableNameResolved = `${dataStackName}-metadata`;
-    const searchTableNameResolved = `${dataStackName}-search`;
+    const searchTableV2NameResolved = `${dataStackName}-search-v2`;
     const tagsTableNameResolved = `${dataStackName}-tags`;
     const albumsTableNameResolved = `${dataStackName}-albums`;
 
@@ -68,13 +71,13 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
     );
 
-    const searchTableArn = cdk.Arn.format(
+    const searchTableV2Arn = cdk.Arn.format(
       {
         partition: "aws",
         service: "dynamodb",
         region: this.region,
         account: this.account,
-        resource: `table/${searchTableNameResolved}`,
+        resource: `table/${searchTableV2NameResolved}`,
       },
       this,
     );
@@ -241,7 +244,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
         environment: {
           ...commonEnv,
           AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
-          AC_TAU_MEDIA_SEARCH_TABLE_NAME: searchTableName,
+          // Reader cutover: the search Lambda queries the date-ordered V2 index.
+          AC_TAU_MEDIA_SEARCH_TABLE_NAME: searchTableV2Name,
         },
       },
     );
@@ -254,7 +258,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
           "dynamodb:GetItem",
           "dynamodb:BatchGetItem",
         ],
-        resources: [metaTableArn, searchTableArn],
+        resources: [metaTableArn, searchTableV2Arn],
       }),
     );
 
@@ -370,7 +374,9 @@ export class AcFnMediaApiStack extends cdk.Stack {
           ...commonEnv,
           AC_ALBUMS_TABLE_NAME: albumsTableName,
           AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
-          AC_TAU_MEDIA_SEARCH_TABLE_NAME: searchTableName,
+          // Manual-album membership cascade queries the date-ordered V2 index
+          // (a single `va#<id>` partition — see delete-album/eventHandler.ts).
+          AC_TAU_MEDIA_SEARCH_TABLE_NAME: searchTableV2Name,
         },
       },
     );
@@ -395,7 +401,7 @@ export class AcFnMediaApiStack extends cdk.Stack {
     deleteAlbumFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["dynamodb:Query"],
-        resources: [searchTableArn, `${searchTableArn}/index/*`],
+        resources: [searchTableV2Arn],
       }),
     );
 
