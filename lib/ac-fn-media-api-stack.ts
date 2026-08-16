@@ -410,6 +410,62 @@ export class AcFnMediaApiStack extends cdk.Stack {
       stringValue: deleteAlbumFunction.functionArn,
     });
 
+    // 7c. DeleteTag Lambda — removes a (key, value) tag from every meta item
+    // that has it, then deletes the tag's own row from the tags catalog.
+    // Same cascade shape as DeleteAlbum: a single SearchTableV2 partition
+    // Query to enumerate members (the exact partition `search` itself reads),
+    // then N read-modify-write round-trips on the meta table. Timeout/memory
+    // sized the same as DeleteAlbum for the same reason (wall-clock scales
+    // with member count, not request size).
+    const deleteTagFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "DeleteTagProcessor",
+      {
+        functionName: "MediaApiDeleteTagProcessor",
+        entry: path.join(currentDirPath, "../src/delete-tag/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(30),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
+          AC_TAU_MEDIA_SEARCH_TABLE_NAME: searchTableV2Name,
+          AC_TAGS_TABLE_NAME: tagsTableName,
+        },
+      },
+    );
+
+    // Read+write on meta (for the tag-removal cascade); read on search (to
+    // enumerate affected items without scanning meta); read+delete on the
+    // tags catalog row itself. Same "don't write the search table directly"
+    // rule as DeleteAlbum — ac-fn-calculate-relationship-updates handles that.
+    deleteTagFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [metaTableArn],
+      }),
+    );
+    deleteTagFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [searchTableV2Arn],
+      }),
+    );
+    deleteTagFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:DeleteItem"],
+        resources: [tagsTableArn],
+      }),
+    );
+
+    new ssm.StringParameter(this, "DeleteTagFunctionArnParameter", {
+      parameterName: "/ac/api/delete-tag-fn-arn",
+      stringValue: deleteTagFunction.functionArn,
+    });
+
     // 8. BulkTag Lambda — sets/overwrites specified tags (including ac:tau:*)
     // on a list of items in one call. Intended for manually correcting old
     // files missing EXIF. GetItem + UpdateItem per item, throttled by
