@@ -585,6 +585,52 @@ export class AcFnMediaApiStack extends cdk.Stack {
       stringValue: downloadUrlFunction.functionArn,
     });
 
+    // 11a. AudioUrl Lambda — presigned playback URL for a standalone audio
+    // file in the main media bucket (as opposed to a diary voice-memo
+    // embed, which uses the diary lambda's own /diary/media-url route).
+    const audioUrlFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "AudioUrlProcessor",
+      {
+        functionName: "MediaApiAudioUrlProcessor",
+        entry: path.join(currentDirPath, "../src/audio-url/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(10),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_TAU_MEDIA_MEDIA_BUCKET_NAME:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/storage/media-bucket-name",
+            ),
+          AC_TAU_MEDIA_MEDIA_BUCKET_ACCESS_ROLE_ARN:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/iam/media-bucket-access-role-arn",
+            ),
+        },
+      },
+    );
+
+    // Allow Lambda to assume the S3 media read access role (for presigned URL generation)
+    audioUrlFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["sts:AssumeRole"],
+        resources: [
+          `arn:aws:iam::${this.account}:role/aspan-corporation/ac-s3-media-read-access`,
+        ],
+      }),
+    );
+
+    new ssm.StringParameter(this, "AudioUrlFunctionArnParameter", {
+      parameterName: "/ac/api/audio-url-fn-arn",
+      stringValue: audioUrlFunction.functionArn,
+    });
+
     // GetMediaCookie Lambda — mints short-lived CloudFront signed cookies for
     // /thumbs/*, replacing the per-request Lambda@Edge auth on media loads.
     // All signing config (private key, key id, distribution domain) is read
