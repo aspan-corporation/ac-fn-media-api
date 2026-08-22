@@ -571,22 +571,17 @@ export class AcFnMediaApiStack extends cdk.Stack {
               this,
               "/ac/storage/media-bucket-name",
             ),
-          AC_TAU_MEDIA_MEDIA_BUCKET_ACCESS_ROLE_ARN:
-            ssm.StringParameter.valueForStringParameter(
-              this,
-              "/ac/iam/media-bucket-access-role-arn",
-            ),
         },
       },
     );
 
-    // Allow Lambda to assume the S3 media read access role (for presigned URL generation)
+    // Read grant for the consolidated media bucket (media/ and diary/ alike).
+    // No cross-account assume-role needed any more; the Lambda's own
+    // execution role reads it directly.
     downloadUrlFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["sts:AssumeRole"],
-        resources: [
-          `arn:aws:iam::${this.account}:role/aspan-corporation/ac-s3-media-read-access`,
-        ],
+        actions: ["s3:GetObject"],
+        resources: [`${mediaBucketArnResolved}/*`],
       }),
     );
 
@@ -617,22 +612,17 @@ export class AcFnMediaApiStack extends cdk.Stack {
               this,
               "/ac/storage/media-bucket-name",
             ),
-          AC_TAU_MEDIA_MEDIA_BUCKET_ACCESS_ROLE_ARN:
-            ssm.StringParameter.valueForStringParameter(
-              this,
-              "/ac/iam/media-bucket-access-role-arn",
-            ),
         },
       },
     );
 
-    // Allow Lambda to assume the S3 media read access role (for presigned URL generation)
+    // Read grant for the consolidated media bucket (media/ and diary/ alike).
+    // No cross-account assume-role needed any more; the Lambda's own
+    // execution role reads it directly.
     audioUrlFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["sts:AssumeRole"],
-        resources: [
-          `arn:aws:iam::${this.account}:role/aspan-corporation/ac-s3-media-read-access`,
-        ],
+        actions: ["s3:GetObject"],
+        resources: [`${mediaBucketArnResolved}/*`],
       }),
     );
 
