@@ -1,9 +1,12 @@
 import * as cdk from "aws-cdk-lib";
+import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaNodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as ssm from "aws-cdk-lib/aws-ssm";
+import { QueueLambdaConstruct } from "@aspan-corporation/ac-shared-cdk";
 import { Construct } from "constructs";
 import { fileURLToPath } from "node:url";
 import * as path from "path";
@@ -826,6 +829,111 @@ export class AcFnMediaApiStack extends cdk.Stack {
     new ssm.StringParameter(this, "DiaryFunctionArnParameter", {
       parameterName: "/ac/api/diary-fn-arn",
       stringValue: diaryFunction.functionArn,
+    });
+
+    // ── Automatic media-processing dispatcher ────────────────────────────
+    // Replaces the manual `ac-commander dispatch-s3-event` CLI as the
+    // trigger for the media library: an EventBridge rule on MediaBucket's
+    // native S3 notifications (enabled in AcAppStack) feeds this queue for
+    // every upload under media/. Scoped to media/ only — diary uploads keep
+    // being dispatched at save time by the diary function above, so an
+    // uploaded-but-never-embedded diary image doesn't get indexed.
+    //
+    // No S3 read grant: the dispatcher never touches object bytes, only the
+    // key/size/bucket already present in the S3-native EventBridge event.
+    const dispatcherProcessor = new QueueLambdaConstruct(
+      this,
+      "DispatcherProcessor",
+      {
+        entry: path.join(currentDirPath, "../src/dispatcher/app.ts"),
+        handler: "handler",
+        logGroup: centralLogGroup,
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(30),
+        batchSize: 1,
+        maxReceiveCount: 3,
+        environment: {
+          ...commonEnv,
+          AC_TAU_MEDIA_META_TABLE_NAME: metaTableName,
+          AC_META_QUEUE_URL: ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/meta-extractor/queue-url",
+          ),
+          AC_RESIZER_QUEUE_URL: ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/resizer/queue-url",
+          ),
+          AC_VIDEO_META_QUEUE_URL: ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/video-meta-extractor/queue-url",
+          ),
+          AC_VIDEO_ENCODER_QUEUE_URL:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/video-encoder/queue-url",
+            ),
+          AC_VIDEO_THUMBS_QUEUE_URL:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/video-thumbnail-processor/queue-url",
+            ),
+        },
+      },
+    );
+
+    dispatcherProcessor.processor.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [metaTableArn],
+      }),
+    );
+
+    dispatcherProcessor.processor.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["sqs:SendMessage"],
+        resources: [
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/meta-extractor/queue-arn",
+          ),
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/resizer/queue-arn",
+          ),
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/video-meta-extractor/queue-arn",
+          ),
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/video-encoder/queue-arn",
+          ),
+          ssm.StringParameter.valueForStringParameter(
+            this,
+            "/ac/video-thumbnail-processor/queue-arn",
+          ),
+        ],
+      }),
+    );
+
+    // Literal (not valueForStringParameter): an EventBridge rule's event
+    // pattern is registered once at deploy time from whatever the resolved
+    // value is then, same reasoning as the other "resolved" constants above
+    // — matches AcAppStack's MediaBucket naming convention exactly.
+    const mediaBucketNameResolved = `acappstack-media-${this.region}-${this.account}`;
+
+    new events.Rule(this, "MediaUploadDispatchRule", {
+      description:
+        "Auto-dispatch new media/ uploads for processing (thumbnails, encoding, search indexing)",
+      eventPattern: {
+        source: ["aws.s3"],
+        detailType: ["Object Created"],
+        detail: {
+          bucket: { name: [mediaBucketNameResolved] },
+          object: { key: [{ prefix: "media/" }] },
+        },
+      },
+      targets: [new targets.SqsQueue(dispatcherProcessor.queue)],
     });
   }
 }

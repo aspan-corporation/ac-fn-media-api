@@ -14,6 +14,11 @@
 
 export * from "../../node_modules/@aspan-corporation/ac-shared/lib/utils/index.js";
 
+// A plain enum (no AWS calls), unlike the AWS service classes below — safe
+// to use for real. This package has proper dual CJS/ESM exports, so unlike
+// ac-shared it doesn't need the file-path bypass above.
+export { MetricUnit } from "@aws-lambda-powertools/metrics";
+
 export type AcContext = {
   logger: unknown;
   acServices?: { dynamoDBService?: unknown; [k: string]: unknown };
