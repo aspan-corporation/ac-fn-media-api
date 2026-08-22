@@ -107,6 +107,13 @@ export class AcFnMediaApiStack extends cdk.Stack {
       this,
     );
 
+    // Consolidated media bucket (AcAppStack's MediaBucket) — same naming
+    // convention as its ARN-resolution siblings above. Used wherever a
+    // literal (not valueForStringParameter) is needed: IAM policy resources
+    // and the dispatcher's EventBridge event pattern.
+    const mediaBucketNameResolved = `acappstack-media-${this.region}-${this.account}`;
+    const mediaBucketArnResolved = `arn:aws:s3:::${mediaBucketNameResolved}`;
+
     const commonEnv = {
       LOG_LEVEL: "INFO",
       POWERTOOLS_SERVICE_NAME: "ac-fn-media-api",
@@ -634,6 +641,50 @@ export class AcFnMediaApiStack extends cdk.Stack {
       stringValue: audioUrlFunction.functionArn,
     });
 
+    // 11b. UploadUrl Lambda — POST /api/media/upload-url. Presigned PUT so
+    // the browser can upload straight into the media library. No
+    // assume-role: this Lambda's own execution role is granted PutObject
+    // directly, scoped to media/* only (same reasoning as the diary
+    // function's diary/*-scoped grant — this Lambda must not be able to
+    // touch anything outside the prefix it's meant to write). No dispatch or
+    // folder-marker bookkeeping here either: the media bucket's EventBridge
+    // rule auto-triggers the dispatcher on the real S3 PUT, which handles
+    // both once the object actually lands.
+    const uploadUrlFunction = new lambdaNodejs.NodejsFunction(
+      this,
+      "UploadUrlProcessor",
+      {
+        functionName: "MediaApiUploadUrlProcessor",
+        entry: path.join(currentDirPath, "../src/upload-url/app.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(10),
+        logGroup: centralLogGroup,
+        environment: {
+          ...commonEnv,
+          AC_TAU_MEDIA_MEDIA_BUCKET_NAME:
+            ssm.StringParameter.valueForStringParameter(
+              this,
+              "/ac/storage/media-bucket-name",
+            ),
+        },
+      },
+    );
+
+    uploadUrlFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3:PutObject"],
+        resources: [`${mediaBucketArnResolved}/media/*`],
+      }),
+    );
+
+    new ssm.StringParameter(this, "UploadUrlFunctionArnParameter", {
+      parameterName: "/ac/api/upload-url-fn-arn",
+      stringValue: uploadUrlFunction.functionArn,
+    });
+
     // GetMediaCookie Lambda — mints short-lived CloudFront signed cookies for
     // /thumbs/*, replacing the per-request Lambda@Edge auth on media loads.
     // All signing config (private key, key id, distribution domain) is read
@@ -715,15 +766,14 @@ export class AcFnMediaApiStack extends cdk.Stack {
     });
 
     // Diary Lambda — GET/PUT/DELETE /api/diary/{id}. Writes Markdown entries and
-    // indexes them in the shared meta table. Bucket name follows the AcAppStack
-    // naming convention (IAM can't use SSM dynamic refs, same as the table ARNs
-    // above). This used to be a dedicated diary-only bucket; it's now the same
-    // consolidated MediaBucket that also holds the 26-year media/ library
-    // (AcAppStack's cutover to MediaBucket) — the write/delete grant below is
-    // scoped to diary/* specifically so this Lambda can't touch media/*, since
-    // "the whole bucket" no longer means "just diary content."
-    const diaryBucketName = `acappstack-media-${this.region}-${this.account}`;
-    const diaryBucketArn = `arn:aws:s3:::${diaryBucketName}`;
+    // indexes them in the shared meta table. This used to write to a dedicated
+    // diary-only bucket; it's now the same consolidated MediaBucket that also
+    // holds the 26-year media/ library (AcAppStack's cutover to MediaBucket) —
+    // the write/delete grant below is scoped to diary/* specifically so this
+    // Lambda can't touch media/*, since "the whole bucket" no longer means
+    // "just diary content."
+    const diaryBucketName = mediaBucketNameResolved;
+    const diaryBucketArn = mediaBucketArnResolved;
 
     const diaryFunction = new lambdaNodejs.NodejsFunction(
       this,
@@ -915,12 +965,6 @@ export class AcFnMediaApiStack extends cdk.Stack {
         ],
       }),
     );
-
-    // Literal (not valueForStringParameter): an EventBridge rule's event
-    // pattern is registered once at deploy time from whatever the resolved
-    // value is then, same reasoning as the other "resolved" constants above
-    // — matches AcAppStack's MediaBucket naming convention exactly.
-    const mediaBucketNameResolved = `acappstack-media-${this.region}-${this.account}`;
 
     new events.Rule(this, "MediaUploadDispatchRule", {
       description:
