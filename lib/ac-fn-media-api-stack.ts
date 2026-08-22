@@ -711,13 +711,15 @@ export class AcFnMediaApiStack extends cdk.Stack {
       stringValue: getMediaCookieFunction.functionArn,
     });
 
-    // Diary Lambda — GET/PUT/DELETE /api/diary/{id}. Writes Markdown entries to
-    // the dedicated diary bucket (created in AcAppStack) and indexes them in the
-    // shared meta table. The originals/media bucket gets NO grant here — diary
-    // writes are isolated to the diary bucket. Bucket name follows the
-    // AcAppStack naming convention (IAM can't use SSM dynamic refs, same as the
-    // table ARNs above).
-    const diaryBucketName = `acappstack-diary-${this.region}-${this.account}`;
+    // Diary Lambda — GET/PUT/DELETE /api/diary/{id}. Writes Markdown entries and
+    // indexes them in the shared meta table. Bucket name follows the AcAppStack
+    // naming convention (IAM can't use SSM dynamic refs, same as the table ARNs
+    // above). This used to be a dedicated diary-only bucket; it's now the same
+    // consolidated MediaBucket that also holds the 26-year media/ library
+    // (AcAppStack's cutover to MediaBucket) — the write/delete grant below is
+    // scoped to diary/* specifically so this Lambda can't touch media/*, since
+    // "the whole bucket" no longer means "just diary content."
+    const diaryBucketName = `acappstack-media-${this.region}-${this.account}`;
     const diaryBucketArn = `arn:aws:s3:::${diaryBucketName}`;
 
     const diaryFunction = new lambdaNodejs.NodejsFunction(
@@ -781,7 +783,13 @@ export class AcFnMediaApiStack extends cdk.Stack {
     diaryFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-        resources: [`${diaryBucketArn}/*`],
+        // Scoped to diary/* — this Lambda only ever reads/writes keys under
+        // DIARY_PREFIX (diary/YYYY/MM/...); it must not gain delete rights
+        // over media/* now that this is the shared consolidated bucket. (A
+        // bucket-policy Deny already blocks media/* deletion outright, but
+        // this keeps the identity policy correct too rather than relying on
+        // that as the only backstop.)
+        resources: [`${diaryBucketArn}/diary/*`],
       }),
     );
     // Dispatch diary images to the meta-extractor + resizer queues on save,
