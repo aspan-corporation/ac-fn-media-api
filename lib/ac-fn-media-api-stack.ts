@@ -705,8 +705,8 @@ export class AcFnMediaApiStack extends cdk.Stack {
       },
     );
 
-    // Read the three signing parameters at runtime (private key is a
-    // SecureString → needs kms:Decrypt on the default SSM key).
+    // Read the signing key pair at runtime (private key is a SecureString →
+    // needs kms:Decrypt on the default SSM key).
     getMediaCookieFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["ssm:GetParameters"],
@@ -724,14 +724,6 @@ export class AcFnMediaApiStack extends cdk.Stack {
               service: "ssm",
               resource: "parameter",
               resourceName: "ac/cloudfront/media-signing-key-id",
-            },
-            this,
-          ),
-          cdk.Arn.format(
-            {
-              service: "ssm",
-              resource: "parameter",
-              resourceName: "ac/cloudfront/distribution-domain-name",
             },
             this,
           ),
