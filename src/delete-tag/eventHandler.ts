@@ -24,7 +24,9 @@ const json = (statusCode: number, body: unknown): APIGatewayProxyResult => ({
 const CASCADE_CONCURRENCY = 25;
 
 /**
- * DELETE /api/tags
+ * DELETE /api/labels — path is "labels", not "tags": default ad-blocker
+ * filter lists block request paths containing "tag"/"tags". See api.ts's
+ * GetTags endpoint comment on the frontend for the full story.
  *
  * Body: { key: string, value: string }
  *
