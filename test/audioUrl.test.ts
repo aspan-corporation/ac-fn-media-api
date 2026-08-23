@@ -55,6 +55,7 @@ describe("GET /api/metadata/{id}/audio-url", () => {
   it.each([
     ["webm", "audio/webm"],
     ["ogg", "audio/ogg"],
+    ["wav", "audio/wav"],
   ])("maps .%s to ResponseContentType %s", async (ext, mime) => {
     const services = makeFakeServices();
     const key = `media/2024/08/15/recording.${ext}`;

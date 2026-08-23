@@ -18,6 +18,7 @@ const AUDIO_CONTENT_TYPES: Record<string, string> = {
   m4a: "audio/mp4",
   webm: "audio/webm",
   ogg: "audio/ogg",
+  wav: "audio/wav",
 };
 
 export const lambdaHandler: Handler<
